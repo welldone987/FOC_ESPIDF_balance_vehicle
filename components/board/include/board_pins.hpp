@@ -29,9 +29,21 @@ inline constexpr gpio_num_t kMotor1PwmB = GPIO_NUM_27;
 inline constexpr gpio_num_t kMotor1PwmC = GPIO_NUM_14;
 inline constexpr gpio_num_t kMotor1Enable = GPIO_NUM_12;
 
-// Existing board routing for battery voltage sensing.
-// GPIO13 is ADC2 on classic ESP32 and therefore conflicts with Wi-Fi ADC usage.
+// DCBUS voltage divider: VIN -> R12 7.5k -> VIN_MEA -> R13 1k -> GND.
+// The V4 schematic routes VIN_MEA to GPIO13 (ADC2_CH4).
+// This is fixed PCB routing; changing the GPIO in firmware alone does not move the signal.
 inline constexpr gpio_num_t kBatteryVoltageAdc = GPIO_NUM_13;
+
+// INA240 current-sense module outputs, verified against the DengFOC V4 schematic.
+// M0 OUT1 shunt -> M0_CS1 -> GPIO39 / ADC1_CH3.
+// M0 OUT2 shunt -> M0_CS2 -> GPIO36 / ADC1_CH0.
+inline constexpr gpio_num_t kMotor0CurrentSenseOut1 = GPIO_NUM_39;
+inline constexpr gpio_num_t kMotor0CurrentSenseOut2 = GPIO_NUM_36;
+
+// M1 OUT1 shunt -> M1_CS1 -> GPIO35 / ADC1_CH7.
+// M1 OUT2 shunt -> M1_CS2 -> GPIO34 / ADC1_CH6.
+inline constexpr gpio_num_t kMotor1CurrentSenseOut1 = GPIO_NUM_35;
+inline constexpr gpio_num_t kMotor1CurrentSenseOut2 = GPIO_NUM_34;
 
 inline constexpr bool isStrappingPin(gpio_num_t pin)
 {
@@ -39,8 +51,18 @@ inline constexpr bool isStrappingPin(gpio_num_t pin)
            pin == GPIO_NUM_12 || pin == GPIO_NUM_15;
 }
 
+inline constexpr bool isInputOnlyAdc1Pin(gpio_num_t pin)
+{
+    return pin == GPIO_NUM_34 || pin == GPIO_NUM_35 ||
+           pin == GPIO_NUM_36 || pin == GPIO_NUM_39;
+}
+
 static_assert(isStrappingPin(kI2c1Scl), "GPIO5 strapping constraint must remain visible");
 static_assert(isStrappingPin(kMotor1Enable), "GPIO12 strapping constraint must remain visible");
+static_assert(isInputOnlyAdc1Pin(kMotor0CurrentSenseOut1));
+static_assert(isInputOnlyAdc1Pin(kMotor0CurrentSenseOut2));
+static_assert(isInputOnlyAdc1Pin(kMotor1CurrentSenseOut1));
+static_assert(isInputOnlyAdc1Pin(kMotor1CurrentSenseOut2));
 
 } // namespace pins
 } // namespace board
