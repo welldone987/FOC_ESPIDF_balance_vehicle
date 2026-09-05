@@ -1,5 +1,6 @@
 #include "board_pins.hpp"
 #include "esp_log.h"
+#include "motor_foc_service.hpp"
 
 namespace {
 constexpr char kTag[] = "app";
@@ -17,4 +18,12 @@ extern "C" void app_main(void)
              static_cast<int>(board::pins::kI2c1Scl),
              static_cast<int>(board::pins::kMotor0Enable),
              static_cast<int>(board::pins::kMotor1Enable));
+
+    // Phase 1 only links the native ESP-IDF motor service. Do not call
+    // vehicle::motor::initialize() yet: it performs FOC alignment and energizes
+    // the inverter. Hardware startup will be connected after the remaining
+    // safety/IMU/power migration steps are in place.
+    ESP_LOGI(kTag,
+             "esp_simplefoc motor service linked; outputs remain disabled (initialized=%s)",
+             vehicle::motor::isInitialized() ? "true" : "false");
 }
