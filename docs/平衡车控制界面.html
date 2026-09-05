@@ -1,0 +1,262 @@
+<html>
+  <head>
+    <title>平衡车控制界面</title>
+    <meta charset="UTF-8" />
+    <style>
+      body {
+        margin: 0;
+        display: flex;
+        justify-content: center;
+        align-items: flex-start;
+        margin-top: 2vh;
+        height: 100vh;
+        background-color: #f3f4f6;
+        font-family: Arial, sans-serif;
+      }
+
+      .container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+
+      #header {
+        font-size: 64px;
+        font-weight: bold;
+        color: #333;
+      }
+
+      #by {
+        margin-top: 10px;
+        font-size: 24px;
+        font-weight: bold;
+        color: #333;
+      }
+
+      #bluetooth {
+        margin-top: 20px;
+        width: 220px;
+        height: 50px;
+        font-size: 20px;
+        background-color: #4caf50;
+        color: white;
+        border: none;
+        border-radius: 10px;
+        cursor: pointer;
+        transition: background-color 0.3s;
+      }
+
+      #bluetooth:active {
+        background-color: #66bb6a;
+      }
+
+      #status {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 18px;
+      }
+
+      #statusIcon {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background-color: gray;
+      }
+
+      .joystick-container {
+        margin-top: 40px;
+        position: relative;
+        width: 300px;
+        height: 300px;
+        background: #e2e8f0;
+        border-radius: 50%;
+        border: 2px solid #cbd5e0;
+        overflow: hidden;
+        margin-bottom: 20px;
+      }
+      .joystick {
+        position: absolute;
+        width: 100px;
+        height: 100px;
+        background-color: #4caf50;
+        border-radius: 50%;
+        transform: translate(100px, 100px);
+        touch-action: none;
+      }
+      .coords {
+        font-size: 18px;
+        color: #333;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div id="header">平衡车控制界面</div>
+      <div id="by">by:灯哥开源</div>
+      <button id="bluetooth" onclick="connectBLE()">连接平衡车</button>
+      <div id="status">
+        <div id="statusIcon"></div>
+        <span id="statusText">未检测到设备</span>
+      </div>
+
+      <div class="joystick-container" id="joystickContainer">
+        <div class="joystick" id="joystick"></div>
+      </div>
+
+      <div class="coords">
+        X: <span id="xValue">0</span> &nbsp;&nbsp;
+        Y: <span id="yValue">0</span>
+      </div>
+    </div>
+
+    <script>
+      let service;
+      let characteristic;
+      let device;
+      let joystickX = 0;
+      let joystickY = 0;
+      let sendInterval = null;
+
+      async function connectBLE() {
+        const statusIcon = document.getElementById("statusIcon");
+        const statusText = document.getElementById("statusText");
+
+        statusIcon.style.backgroundColor = "orange";
+        statusText.innerText = "正在扫描设备...";
+
+        try {
+          device = await navigator.bluetooth.requestDevice({
+            filters: [{ name: "平衡车" }],
+            optionalServices: ["6e400001-b5a3-f393-e0a9-e50e24dcca9e"],
+          });
+
+          statusText.innerText = `已找到设备: ${device.name},正在连接`;
+          const server = await device.gatt.connect();
+
+          statusIcon.style.backgroundColor = "green";
+          statusText.innerText = `已连接到设备: ${device.name}`;
+
+          service = await server.getPrimaryService(
+            "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+          );
+          characteristic = await service.getCharacteristic(
+            "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+          );
+
+          device.addEventListener("gattserverdisconnected", handleDisconnect);
+        } catch (error) {
+          statusIcon.style.backgroundColor = "red";
+          statusText.innerText = "连接失败：" + error.message;
+        }
+      }
+
+      function handleDisconnect() {
+        const statusIcon = document.getElementById("statusIcon");
+        const statusText = document.getElementById("statusText");
+        statusIcon.style.backgroundColor = "gray";
+        statusText.innerText = "⚠️ 设备已断开，请重新连接";
+        alert("蓝牙连接已断开，请重新连接！");
+      }
+
+      const joystick = document.getElementById("joystick");
+      const container = document.getElementById("joystickContainer");
+      const xValue = document.getElementById("xValue");
+      const yValue = document.getElementById("yValue");
+
+      const maxDistance = 100;
+      let dragging = false;
+
+      container.addEventListener("mousedown", startDrag);
+      container.addEventListener("touchstart", startDrag);
+      window.addEventListener("mouseup", endDrag);
+      window.addEventListener("touchend", endDrag);
+
+      function startDrag(e) {
+        // 每 1000ms 发送一次数据（可根据需要调整频率）
+        sendInterval = setInterval(sendJoystickData, 250);
+        dragging = true;
+        window.addEventListener("mousemove", moveJoystick);
+        window.addEventListener("touchmove", moveJoystick);
+      }
+
+      async function endDrag() {
+        await sendJoystickDataEnd();
+        clearInterval(sendInterval);
+        dragging = false;
+        window.removeEventListener("mousemove", moveJoystick);
+        window.removeEventListener("touchmove", moveJoystick);
+        joystick.style.transform = `translate(100px, 100px)`;
+        xValue.innerText = "0";
+        yValue.innerText = "0";
+        joystickX = 0;
+        joystickY = 0;
+      }
+
+      function moveJoystick(e) {
+        if (!dragging) return;
+        const rect = container.getBoundingClientRect();
+        const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left - 150;
+        const y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top - 150;
+        const distance = Math.min(Math.sqrt(x * x + y * y), maxDistance);
+        const angle = Math.atan2(y, x);
+
+        const newX = 100 + distance * Math.cos(angle);
+        const newY = 100 + distance * Math.sin(angle);
+
+        joystick.style.transform = `translate(${newX}px, ${newY}px)`;
+
+        joystickX = Math.round(distance * Math.cos(angle));
+        joystickY = -Math.round(distance * Math.sin(angle));
+        xValue.innerText = joystickX;
+        yValue.innerText = joystickY;
+      }
+
+      function sendJoystickData() {
+        if (characteristic && device.gatt.connected) {
+          const data = `${joystickX},${joystickY}\n`;
+          const encoder = new TextEncoder();
+          characteristic
+            .writeValue(encoder.encode(data))
+            .catch((error) => {
+              console.error("发送失败:", error.message);
+            });
+        }
+      }
+
+      // 异步延时函数
+      function delay(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      // 发送摇杆复位数据，带重试
+      async function sendJoystickDataEnd() {
+        const MAX_RETRIES = 3;
+        const RETRY_DELAY = 200;
+
+        if (!(characteristic && device.gatt.connected)) {
+          console.warn("⚠️ 设备未连接，无法发送数据");
+          return false;
+        }
+
+        const data = "0,0";
+        const encoder = new TextEncoder();
+        const encodedData = encoder.encode(data);
+
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+          try {
+            await characteristic.writeValue(encodedData);
+            console.log(`✅ 第 ${attempt} 次发送成功: ${data}`);
+            return true;
+          } catch (error) {
+            console.warn(`⚠️ 第 ${attempt} 次发送失败:`, error.message);
+            await delay(RETRY_DELAY);
+          }
+        }
+
+        console.error("❌ 连续 3 次发送失败，不再处理");
+        return false;
+      }
+    </script>
+  </body>
+</html>
