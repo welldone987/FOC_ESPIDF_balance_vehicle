@@ -60,12 +60,6 @@ bool initialized = false;
 float last_pitch_deg = 0.0f;
 std::int64_t previous_sample_us = 0;
 
-// delayMs()使用FreeRTOS tick等待BMI160命令完成。
-void delayMs(std::uint32_t milliseconds)
-{
-    vTaskDelay(pdMS_TO_TICKS(milliseconds));
-}
-
 // readRegister()从BMI160指定寄存器读取一个字节。
 esp_err_t readRegister(std::uint8_t address, std::uint8_t *value)
 {
@@ -115,7 +109,7 @@ esp_err_t waitForPmuNormal()
         if ((status & kPmuNormalMask) == kPmuBothNormal) {
             return ESP_OK;
         }
-        delayMs(1U);
+        vTaskDelay(pdMS_TO_TICKS(1U));
     }
     return ESP_ERR_TIMEOUT;
 }
@@ -149,7 +143,7 @@ esp_err_t calibrateGyroOffset()
         if ((value & kFocReady) != 0U) {
             break;
         }
-        delayMs(1U);
+        vTaskDelay(pdMS_TO_TICKS(1U));
     }
 
     if ((value & kFocReady) == 0U) {
@@ -202,19 +196,19 @@ esp_err_t initialize()
     if (result != ESP_OK) {
         return result;
     }
-    delayMs(5U);
+    vTaskDelay(pdMS_TO_TICKS(5U));
 
     result = writeRegister(kRegCmd, kCmdAccelNormal);
     if (result != ESP_OK) {
         return result;
     }
-    delayMs(10U);
+    vTaskDelay(pdMS_TO_TICKS(10U));
 
     result = writeRegister(kRegCmd, kCmdGyroNormal);
     if (result != ESP_OK) {
         return result;
     }
-    delayMs(100U);
+    vTaskDelay(pdMS_TO_TICKS(100U));
 
     result = waitForPmuNormal();
     if (result != ESP_OK) {
@@ -255,7 +249,7 @@ esp_err_t initialize()
         return result;
     }
 
-    delayMs(20U);
+    vTaskDelay(pdMS_TO_TICKS(20U));
     initialized = true;
     last_pitch_deg = 0.0f;
     previous_sample_us = 0;
@@ -314,11 +308,6 @@ AttitudeSample readAttitude()
     previous_sample_us = now_us;
 
     return AttitudeSample{last_pitch_deg, gyro_y_deg_s, std::isfinite(last_pitch_deg)};
-}
-
-bool isInitialized()
-{
-    return initialized;
 }
 
 } // namespace imu

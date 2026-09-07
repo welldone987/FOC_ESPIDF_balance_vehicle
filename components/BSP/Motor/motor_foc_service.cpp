@@ -158,10 +158,5 @@ void disableOutputs()
     right_motor.disable();
 }
 
-bool isInitialized()
-{
-    return initialized;
-}
-
 } // namespace motor
 } // namespace vehicle

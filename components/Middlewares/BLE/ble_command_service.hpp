@@ -28,8 +28,6 @@ esp_err_t initialize();
 // latestCommand()返回控制任务可一致读取的最近一份命令快照。
 CommandSnapshot latestCommand();
 
-// isInitialized()报告BLE服务是否已完成初始化。
-bool isInitialized();
 
 } // namespace ble
 } // namespace vehicle

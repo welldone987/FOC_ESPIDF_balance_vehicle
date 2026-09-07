@@ -16,6 +16,9 @@ inline constexpr std::uint32_t kControlRateHz = 1000U;
 inline constexpr std::uint64_t kControlPeriodUs =
     1000000ULL / kControlRateHz;
 
+// TCP调试开关：修改后重新编译；关闭时Wi-Fi仍连接，但不监听或发送TCP。
+inline constexpr bool kWifiTcpDebugEnabled = true;
+
 // BLE字符串和缩放常量保持网页控制端的整数协议不变。
 inline constexpr char kBleDeviceName[] = "平衡车";
 inline constexpr char kBleServiceUuid[] = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";

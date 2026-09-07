@@ -107,10 +107,5 @@ esp_err_t readBusVoltage(float *voltage_v)
     return ESP_OK;
 }
 
-bool isInitialized()
-{
-    return initialized;
-}
-
 } // namespace power
 } // namespace vehicle

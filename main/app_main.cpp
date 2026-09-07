@@ -59,30 +59,6 @@ bool initializeApplication()
     return result == ESP_OK;
 }
 
-// createTask()使用调用方提供的静态TCB和栈创建固定核心任务。
-TaskHandle_t createTask(TaskFunction_t entry,
-                        const char *name,
-                        std::uint32_t stack_bytes,
-                        UBaseType_t priority,
-                        StackType_t *stack,
-                        StaticTask_t *storage,
-                        BaseType_t core)
-{
-    // 所有任务共享task_context作为入口参数，任务自身不需要动态分配上下文。
-    const TaskHandle_t handle = xTaskCreateStaticPinnedToCore(
-        entry,
-        name,
-        stack_bytes,
-        &task_context,
-        priority,
-        stack,
-        storage,
-        core);
-    vehicle::diagnostics::logInitialization(
-        name, handle == nullptr ? ESP_ERR_NO_MEM : ESP_OK);
-    return handle;
-}
-
 } // namespace
 
 extern "C" void app_main(void)
@@ -102,27 +78,33 @@ extern "C" void app_main(void)
     }
 
     // 诊断任务运行在服务核心，先于控制任务创建以便记录后续初始化结果。
-    const TaskHandle_t diagnostics = createTask(
+    const TaskHandle_t diagnostics = xTaskCreateStaticPinnedToCore(
         vehicle::freertos_tasks::diagnosticsTask,
         "DiagnosticsTask",
         vehicle::freertos_tasks::kDiagnosticsStackBytes,
+        &task_context,
         vehicle::freertos_tasks::kDiagnosticsPriority,
         diagnostics_task_stack,
         &diagnostics_task_storage,
         vehicle::freertos_tasks::kServiceCore);
+    vehicle::diagnostics::logInitialization(
+        "DiagnosticsTask", diagnostics == nullptr ? ESP_ERR_NO_MEM : ESP_OK);
     if (diagnostics == nullptr) {
         vTaskDelete(nullptr);
     }
 
     // 控制任务固定在Core 1运行，承担高频传感器、控制器和FOC调用链。
-    const TaskHandle_t control = createTask(
+    const TaskHandle_t control = xTaskCreateStaticPinnedToCore(
         vehicle::freertos_tasks::controlTask,
         "ControlTask",
         vehicle::freertos_tasks::kControlStackBytes,
+        &task_context,
         vehicle::freertos_tasks::kControlPriority,
         control_task_stack,
         &control_task_storage,
         vehicle::freertos_tasks::kControlCore);
+    vehicle::diagnostics::logInitialization(
+        "ControlTask", control == nullptr ? ESP_ERR_NO_MEM : ESP_OK);
     if (control == nullptr) {
         vTaskDelete(nullptr);
     }
@@ -130,14 +112,17 @@ extern "C" void app_main(void)
     task_context.control_handle.store(control, std::memory_order_release);
 
     // Wi-Fi任务固定在服务核心，避免网络服务进入控制任务的执行路径。
-    const TaskHandle_t wifi = createTask(
+    const TaskHandle_t wifi = xTaskCreateStaticPinnedToCore(
         vehicle::freertos_tasks::wifiTelemetryTask,
         "WifiTelemetryTask",
         vehicle::freertos_tasks::kWifiStackBytes,
+        &task_context,
         vehicle::freertos_tasks::kWifiPriority,
         wifi_task_stack,
         &wifi_task_storage,
         vehicle::freertos_tasks::kServiceCore);
+    vehicle::diagnostics::logInitialization(
+        "WifiTelemetryTask", wifi == nullptr ? ESP_ERR_NO_MEM : ESP_OK);
     if (wifi == nullptr) {
         vTaskDelete(nullptr);
     }

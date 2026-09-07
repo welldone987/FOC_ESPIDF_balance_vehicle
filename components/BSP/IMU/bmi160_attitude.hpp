@@ -28,8 +28,6 @@ void resetEstimator();
 // readAttitude()读取一帧陀螺仪和加速度计数据并返回互补滤波结果。
 AttitudeSample readAttitude();
 
-// isInitialized()报告BMI160初始化状态。
-bool isInitialized();
 
 } // namespace imu
 } // namespace vehicle

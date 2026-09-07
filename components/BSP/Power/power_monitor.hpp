@@ -15,8 +15,6 @@ esp_err_t initialize();
 // readBusVoltage()返回经过7.5k/1k分压比例恢复后的母线电压，单位V。
 esp_err_t readBusVoltage(float *voltage_v);
 
-// isInitialized()报告ADC和校准句柄是否已准备完成。
-bool isInitialized();
 
 } // namespace power
 } // namespace vehicle

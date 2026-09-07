@@ -37,8 +37,6 @@ void stageTarget(const VoltageCommand &command);
 // disableOutputs()把电机目标清零并关闭两个驱动器。
 void disableOutputs();
 
-// isInitialized()报告电机服务是否已完成初始化。
-bool isInitialized();
 
 } // namespace motor
 } // namespace vehicle

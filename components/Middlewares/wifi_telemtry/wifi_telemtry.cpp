@@ -11,6 +11,7 @@
 
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
@@ -32,6 +33,8 @@ namespace {
 
 // kWifiReady表示STA已经通过IP_EVENT_STA_GOT_IP获得可用地址。
 constexpr EventBits_t kWifiReady = BIT0;
+constexpr EventBits_t kConnectRequested = BIT1;
+constexpr char kTag[] = "wifi_telemetry";
 // 重连、发送阻塞和文本缓冲区参数的单位分别为ms、ms和字节。
 constexpr std::uint32_t kReconnectPeriodMs = 1000U;
 constexpr std::uint32_t kClientTimeoutMs = 1000U;
@@ -54,6 +57,8 @@ std::size_t pending_length = 0U;
 std::size_t pending_offset = 0U;
 std::uint32_t blocked_since_ms = 0U;
 std::uint32_t last_connect_ms = 0U;
+// 仅由service访问；连接请求成功后等待事件，不重复打断关联或DHCP。
+bool reconnect_pending = false;
 std::uint32_t last_sequence = 0U;
 
 // nowMilliseconds()把ESP高精度计时器转换为回绕可接受的毫秒时基。
@@ -63,15 +68,22 @@ std::uint32_t nowMilliseconds()
 }
 
 // wifiEvent()把获得IP和断开事件映射为kWifiReady位的置位或清零。
-void wifiEvent(void *, esp_event_base_t base, std::int32_t id, void *)
+void wifiEvent(void *, esp_event_base_t base, std::int32_t id, void *event_data)
 {
     if (wifi_events == nullptr) {
         return;
     }
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         xEventGroupSetBits(wifi_events, kWifiReady);
+        const auto *event = static_cast<const ip_event_got_ip_t *>(event_data);
+        ESP_LOGI(kTag, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
+        xEventGroupSetBits(wifi_events, kConnectRequested);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         xEventGroupClearBits(wifi_events, kWifiReady);
+        const auto *event = static_cast<const wifi_event_sta_disconnected_t *>(event_data);
+        ESP_LOGW(kTag, "Disconnected: reason=%u", static_cast<unsigned>(event->reason));
+        xEventGroupSetBits(wifi_events, kConnectRequested);
     }
 }
 
@@ -183,12 +195,28 @@ void service(const TelemetrySnapshot *snapshot)
     const bool wifi_ready =
         (xEventGroupGetBits(wifi_events) & kWifiReady) != 0U;
     if (!wifi_ready) {
-        // 未获得IP时关闭旧socket，并按固定周期请求重新连接。
+        // 启动或断线事件触发一次延时重试；连接中和等待DHCP期间不重复请求。
         closeSockets();
-        if ((now_ms - last_connect_ms) >= kReconnectPeriodMs) {
+        const EventBits_t events = xEventGroupClearBits(wifi_events, kConnectRequested);
+        if ((events & kConnectRequested) != 0U) {
+            reconnect_pending = true;
             last_connect_ms = now_ms;
-            (void)esp_wifi_connect();
         }
+        if (reconnect_pending && (now_ms - last_connect_ms) >= kReconnectPeriodMs) {
+            reconnect_pending = false;
+            const esp_err_t result = esp_wifi_connect();
+            if (result != ESP_OK) {
+                ESP_LOGW(kTag, "Connect failed: %s", esp_err_to_name(result));
+                reconnect_pending = true;
+                last_connect_ms = now_ms;
+            }
+        }
+        return;
+    }
+
+    reconnect_pending = false;
+    if (!config::kWifiTcpDebugEnabled) {
+        closeSockets();
         return;
     }
 

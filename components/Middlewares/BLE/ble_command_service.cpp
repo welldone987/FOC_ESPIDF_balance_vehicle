@@ -245,18 +245,6 @@ int characteristicAccess(std::uint16_t,
     return 0;
 }
 
-// buildGattDatabase()建立一个可读写的命令特征和主服务定义。
-void buildGattDatabase()
-{
-    characteristics[0].uuid = &command_uuid.u;
-    characteristics[0].access_cb = characteristicAccess;
-    characteristics[0].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE;
-
-    services[0].type = BLE_GATT_SVC_TYPE_PRIMARY;
-    services[0].uuid = &service_uuid.u;
-    services[0].characteristics = characteristics;
-}
-
 } // namespace
 
 esp_err_t initialize()
@@ -278,7 +266,14 @@ esp_err_t initialize()
 
     ble_svc_gap_init();
     ble_svc_gatt_init();
-    buildGattDatabase();
+    // 建立命令特征和主服务定义。
+    characteristics[0].uuid = &command_uuid.u;
+    characteristics[0].access_cb = characteristicAccess;
+    characteristics[0].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE;
+
+    services[0].type = BLE_GATT_SVC_TYPE_PRIMARY;
+    services[0].uuid = &service_uuid.u;
+    services[0].characteristics = characteristics;
 
     int rc = ble_svc_gap_device_name_set(config::kBleDeviceName);
     if (rc != 0) {
@@ -344,11 +339,6 @@ CommandSnapshot latestCommand()
             is_connected,
         };
     }
-}
-
-bool isInitialized()
-{
-    return initialized;
 }
 
 } // namespace ble
