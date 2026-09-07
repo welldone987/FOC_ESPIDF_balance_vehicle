@@ -1,0 +1,7 @@
+dependencies:
+  idf:
+    version: ">=6.0.0"
+  espressif/esp_simplefoc:
+    version: "1.4.1"
+  espressif/i2c_bus:
+    version: "1.*"
