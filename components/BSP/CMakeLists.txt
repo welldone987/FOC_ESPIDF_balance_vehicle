@@ -29,9 +29,7 @@ foreach(module IN LISTS bsp_module_entries)
     list(APPEND bsp_srcs ${module_srcs})
 endforeach()
 
-# ESP-IDF component dependencies are intentionally explicit; managed third-party
-# dependencies (esp_simplefoc/i2c_bus) are declared in idf_component.yml and are
-# downloaded automatically by the Component Manager.
+# ESP-IDF组件依赖保持显式声明，第三方组件由idf_component.yml管理。
 set(requires
     esp_adc
     esp_driver_gpio

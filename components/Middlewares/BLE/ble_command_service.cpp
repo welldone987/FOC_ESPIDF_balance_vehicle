@@ -28,9 +28,7 @@ namespace {
  * BLE回调负责协议解析和连接状态发布，控制任务只读取CommandSnapshot。
  * state_epoch用序列锁保护多原子字段的一致快照，readable_value保留最近一次特征写入。
  */
-
-// Nordic-UART-compatible UUID byte order. These are exactly the UUIDs used by
-// the reference Arduino BLE service.
+// UUID宏按NimBLE字节序表达网页端使用的服务和命令特征。
 #define BALANCE_SERVICE_UUID_BYTES \
     0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, \
     0x93, 0xf3, 0xa3, 0xb5, 0x01, 0x00, 0x40, 0x6e

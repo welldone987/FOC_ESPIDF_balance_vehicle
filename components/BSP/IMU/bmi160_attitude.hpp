@@ -20,17 +20,12 @@ struct AttitudeSample {
 };
 
 // initialize()创建或复用I2C0，配置BMI160并完成陀螺仪硬件偏置校准。
-// Creates/reuses I2C0, initializes BMI160 at 0x69, performs the same gyro
-// hardware offset calibration used by BMI160Gen, and configures ±2g / ±1000 dps.
 esp_err_t initialize();
 
 // resetEstimator()把滤波角度清零，并从当前时刻重新开始积分计时。
-// Matches the reference preInterval assignment performed after motor FOC init.
 void resetEstimator();
 
 // readAttitude()读取一帧陀螺仪和加速度计数据并返回互补滤波结果。
-// Reads gyro+accelerometer in one burst and applies the reference 0.98/0.02
-// complementary filter. Pitch is returned in degrees.
 AttitudeSample readAttitude();
 
 // isInitialized()报告BMI160初始化状态。

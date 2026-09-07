@@ -26,22 +26,15 @@ struct VoltageCommand {
 };
 
 // initialize()初始化编码器、三相驱动器和电机，并执行可能使车轮转动的FOC对齐。
-// Initializes both AS5600 sensors, MCPWM-backed 3PWM drivers and SimpleFOC motors.
-// This function performs FOC alignment and can energize the inverter; call it only
-// from an explicitly authorized startup path with the vehicle safely supported.
 esp_err_t initialize();
 
 // runFocAndReadWheelState()执行loopFOC()、move()并返回本轮编码器速度。
-// Runs the same ordering as the Arduino reference: loopFOC() + move() consume the
-// previously staged target, then the current wheel velocities are returned.
 WheelState runFocAndReadWheelState();
 
 // stageTarget()把本轮控制输出保存为下一次move()使用的电压目标。
-// Stages voltage-mode torque targets for the next move() call.
 void stageTarget(const VoltageCommand &command);
 
 // disableOutputs()把电机目标清零并关闭两个驱动器。
-// Disables both motor outputs when initialization has completed.
 void disableOutputs();
 
 // isInitialized()报告电机服务是否已完成初始化。

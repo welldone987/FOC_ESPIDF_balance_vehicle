@@ -11,21 +11,21 @@ namespace {
  * 电机模块把AS5600角度、MCPWM三相输出和SimpleFOC电机对象绑定到DengFOC V4硬件。
  * runFocAndReadWheelState()按参考顺序消费上一周期目标并提供本周期轮速。
  */
-
-// Values are intentionally kept identical to the minimal Arduino balancing-car reference.
+// kMotorPolePairs和kSupplyVoltageV保存电机极对数与供电电压，电压单位为V。
 constexpr int kMotorPolePairs = 7;
 constexpr float kSupplyVoltageV = 12.0f;
+// kSensorAlignmentVoltageV保存FOC编码器对齐使用的电压，单位V。
 constexpr float kSensorAlignmentVoltageV = 2.0f;
+// kVelocityPid*保存SimpleFOC轮速估计PID参数。
 constexpr float kVelocityPidP = 0.01f;
 constexpr float kVelocityPidI = 0.10f;
 constexpr float kVelocityPidD = 0.0f;
 
-// Classic ESP32 exposes two MCPWM groups; keep one complete group per motor.
+// kMotor0McpwmGroup和kMotor1McpwmGroup分别绑定左右电机的MCPWM资源组。
 constexpr int kMotor0McpwmGroup = 0;
 constexpr int kMotor1McpwmGroup = 1;
 
-// Espressif AS5600 constructor order is (I2C port, SCL, SDA).
-// left_sensor和right_sensor分别使用I2C0和I2C1，避免两个同地址AS5600冲突。
+// AS5600构造参数依次为I2C控制器、SCL和SDA；两个同地址器件使用不同控制器。
 AS5600 left_sensor{I2C_NUM_0, board::pins::kI2c0Scl, board::pins::kI2c0Sda};
 AS5600 right_sensor{I2C_NUM_1, board::pins::kI2c1Scl, board::pins::kI2c1Sda};
 

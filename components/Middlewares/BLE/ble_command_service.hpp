@@ -23,13 +23,9 @@ struct CommandSnapshot {
 };
 
 // initialize()启动兼容原网页协议的ESP-IDF NimBLE外设。
-// Starts the native ESP-IDF NimBLE peripheral and publishes the same
-// read/write command characteristic used by the Arduino reference.
 esp_err_t initialize();
 
 // latestCommand()返回控制任务可一致读取的最近一份命令快照。
-// Lock-free snapshot for the single-threaded control loop. Disconnecting does
-// not clear the last command, matching the reference main.cpp behavior.
 CommandSnapshot latestCommand();
 
 // isInitialized()报告BLE服务是否已完成初始化。
