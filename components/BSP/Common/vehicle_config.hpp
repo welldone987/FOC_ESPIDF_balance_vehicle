@@ -6,6 +6,10 @@
 namespace vehicle {
 namespace config {
 
+inline constexpr std::uint32_t kControlRateHz = 1000U;
+inline constexpr std::uint64_t kControlPeriodUs =
+    1000000ULL / kControlRateHz;
+
 inline constexpr char kBleDeviceName[] = "平衡车";
 inline constexpr char kBleServiceUuid[] = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 inline constexpr char kBleCommandUuid[] = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
@@ -33,7 +37,6 @@ inline constexpr float kMotor1Direction = 1.0f;
 
 inline constexpr float kStartupUndervoltageThresholdV = 9.0f;
 inline constexpr float kBatteryVoltageScale = 8.5f;
-inline constexpr std::uint32_t kStartupPowerPollIntervalMs = 100U;
 inline constexpr std::uint32_t kAdcDefaultVrefMv = 1100U;
 
 inline constexpr float kPitchOffsetDeg = 1.8f;

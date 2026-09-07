@@ -36,6 +36,7 @@ set(requires
     bt
     esp_timer
     freertos
+    heap
     log
     nvs_flash
 )

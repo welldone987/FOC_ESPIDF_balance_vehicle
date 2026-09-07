@@ -1,118 +1,138 @@
-#include "balance_controller.hpp"
+#include "application_tasks.hpp"
 #include "ble_command_service.hpp"
-#include "bmi160_attitude.hpp"
-#include "motor_foc_service.hpp"
 #include "power_monitor.hpp"
 #include "vehicle_config.hpp"
+
+#include <cstdint>
 
 #include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 
 namespace {
 
 constexpr char kTag[] = "balance_app";
 
-void delayMs(std::uint32_t milliseconds)
-{
-    vTaskDelay(pdMS_TO_TICKS(milliseconds));
-}
+// 诊断队列的控制块和存储区具有静态生命周期，直到应用结束都由app_main及任务共享。
+StaticQueue_t diagnostics_queue_storage{};
+// diagnostics_queue_buffer为16个DiagnosticEvent提供无动态分配的队列内存。
+std::uint8_t diagnostics_queue_buffer[
+    vehicle::freertos_tasks::kDiagnosticsQueueLength *
+    sizeof(vehicle::freertos_tasks::DiagnosticEvent)]{};
 
-float waitForStartupVoltage()
+// control_task_storage和control_task_stack在ControlTask存续期间提供静态TCB和栈。
+StaticTask_t control_task_storage{};
+StackType_t control_task_stack[
+    vehicle::freertos_tasks::kControlStackSizeBytes]{};
+
+// diagnostics_task_storage和diagnostics_task_stack在DiagnosticsTask存续期间提供静态TCB和栈。
+StaticTask_t diagnostics_task_storage{};
+StackType_t diagnostics_task_stack[
+    vehicle::freertos_tasks::kDiagnosticsStackSizeBytes]{};
+
+// task_runtime具有静态生命周期，队列句柄和原子计数器在任务退出前保持有效。
+vehicle::freertos_tasks::TaskRuntime task_runtime{};
+
+// initializeApplication完成母线电压检查和BLE初始化后再允许创建控制任务。
+bool initializeApplication()
 {
+    using vehicle::freertos_tasks::DiagnosticCode;
+    using vehicle::freertos_tasks::postDiagnosticEvent;
+
+    postDiagnosticEvent(task_runtime, DiagnosticCode::ApplicationStarting);
+
+    esp_err_t result = vehicle::power::initialize();
+    if (result != ESP_OK) {
+        postDiagnosticEvent(
+            task_runtime, DiagnosticCode::PowerInitializationFailed, result);
+        return false;
+    }
+
+    // bus_voltage_v保存上电检查读取的直流母线电压，单位V。
     float bus_voltage_v = 0.0f;
-
-    for (;;) {
-        ESP_ERROR_CHECK(vehicle::power::readBusVoltage(&bus_voltage_v));
-        if (bus_voltage_v > vehicle::config::kStartupUndervoltageThresholdV) {
-            ESP_LOGI(kTag,
-                     "Power ready: %.2f V, motor calibration may proceed",
-                     static_cast<double>(bus_voltage_v));
-            return bus_voltage_v;
-        }
-
-        ESP_LOGW(kTag,
-                 "Waiting for power: %.2f V (threshold %.2f V)",
-                 static_cast<double>(bus_voltage_v),
-                 static_cast<double>(vehicle::config::kStartupUndervoltageThresholdV));
-        delayMs(vehicle::config::kStartupPowerPollIntervalMs);
+    result = vehicle::power::readBusVoltage(&bus_voltage_v);
+    if (result != ESP_OK) {
+        postDiagnosticEvent(task_runtime, DiagnosticCode::PowerReadFailed, result);
+        return false;
     }
-}
-
-[[noreturn]] void stopOnRuntimeFault(const char *reason)
-{
-    vehicle::motor::disableOutputs();
-    ESP_LOGE(kTag, "Control stopped: %s", reason);
-    for (;;) {
-        delayMs(1000U);
+    if (bus_voltage_v <= vehicle::config::kStartupUndervoltageThresholdV) {
+        postDiagnosticEvent(
+            task_runtime,
+            DiagnosticCode::StartupUndervoltage,
+            ESP_OK,
+            bus_voltage_v);
+        return false;
     }
+    postDiagnosticEvent(
+        task_runtime, DiagnosticCode::PowerReady, ESP_OK, bus_voltage_v);
+
+    result = vehicle::ble::initialize();
+    if (result != ESP_OK) {
+        postDiagnosticEvent(
+            task_runtime, DiagnosticCode::BleInitializationFailed, result);
+        return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(100U));
+    return true;
 }
 
 } // namespace
 
+// app_main创建静态诊断通道和两个固定核任务，并在启动任务完成后退出自身。
 extern "C" void app_main(void)
 {
-    ESP_LOGI(kTag, "DengFOC V4 native ESP-IDF balance controller starting");
-
-    // Construct before the blocking startup sequence so the PID/LPF first-call
-    // timing behavior remains equivalent to the global SimpleFOC controllers in
-    // the uploaded Arduino main.cpp.
-    vehicle::control::BalanceController controller{};
-
-    ESP_ERROR_CHECK(vehicle::power::initialize());
-    const float startup_voltage_v = waitForStartupVoltage();
-    (void)startup_voltage_v;
-
-    // Native NimBLE replaces BLEDevice/BLEServer/BLECharacteristic. The BLE host
-    // owns its internal stack task; this application still creates no control,
-    // sensor, queue, or worker tasks.
-    ESP_ERROR_CHECK(vehicle::ble::initialize());
-    delayMs(100U);
-
-    // BMI160 creates I2C0 first. esp_simplefoc's M0 AS5600 later requests the
-    // same 400 kHz I2C0 configuration and reuses the i2c_bus singleton.
-    ESP_ERROR_CHECK(vehicle::imu::initialize());
-
-    // This is the first point that energizes the inverter: initFOC performs the
-    // same M1 -> M0 alignment sequence as the reference implementation.
-    ESP_ERROR_CHECK(vehicle::motor::initialize());
-
-    // Reference setup() assigns preInterval only after motorInit().
-    vehicle::imu::resetEstimator();
-
-    ESP_LOGI(kTag, "Initialization complete; entering single-chain control loop");
-
-    for (;;) {
-        // Preserve the reference ordering: loopFOC() + move() consume the target
-        // staged by the previous iteration before this iteration computes a new one.
-        const vehicle::motor::WheelState wheels =
-            vehicle::motor::runFocAndReadWheelState();
-        if (!wheels.valid) {
-            stopOnRuntimeFault("motor/encoder state invalid");
-        }
-
-        const vehicle::imu::AttitudeSample attitude =
-            vehicle::imu::readAttitude();
-        if (!attitude.valid) {
-            stopOnRuntimeFault("BMI160 read or attitude estimate invalid");
-        }
-
-        const vehicle::ble::CommandSnapshot command =
-            vehicle::ble::latestCommand();
-
-        const vehicle::control::ControlOutput output = controller.update(
-            vehicle::control::ControlInput{
-                wheels.left_velocity_rad_s,
-                wheels.right_velocity_rad_s,
-                attitude.pitch_deg,
-                command.steering_voltage_v,
-                command.throttle_velocity_rad_s,
-            });
-
-        vehicle::motor::stageTarget(vehicle::motor::VoltageCommand{
-            output.left_target_v,
-            output.right_target_v,
-        });
+    // xQueueCreateStatic()让诊断事件使用预分配存储，避免启动路径动态申请队列内存。
+    task_runtime.diagnostics_queue = xQueueCreateStatic(
+        vehicle::freertos_tasks::kDiagnosticsQueueLength,
+        sizeof(vehicle::freertos_tasks::DiagnosticEvent),
+        diagnostics_queue_buffer,
+        &diagnostics_queue_storage);
+    if (task_runtime.diagnostics_queue == nullptr) {
+        ESP_LOGE(kTag, "Diagnostics queue creation failed");
+        return;
     }
+
+    // DiagnosticsTask固定在Core 0、低优先级运行，接收与任务运行时长相同的task_runtime。
+    const TaskHandle_t diagnostics = xTaskCreateStaticPinnedToCore(
+        vehicle::freertos_tasks::diagnosticsTask,
+        "DiagnosticsTask",
+        vehicle::freertos_tasks::kDiagnosticsStackSizeBytes,
+        &task_runtime,
+        vehicle::freertos_tasks::kDiagnosticsPriority,
+        diagnostics_task_stack,
+        &diagnostics_task_storage,
+        vehicle::freertos_tasks::kDiagnosticsCore);
+    if (diagnostics == nullptr) {
+        ESP_LOGE(kTag, "DiagnosticsTask creation failed");
+        return;
+    }
+
+    // 初始化失败时删除当前启动任务，保留DiagnosticsTask输出已发布的故障事件。
+    if (!initializeApplication()) {
+        vTaskDelete(nullptr);
+    }
+
+    // ControlTask固定在Core 1、较高优先级运行，独占高频传感器和电机控制调用链。
+    const TaskHandle_t control = xTaskCreateStaticPinnedToCore(
+        vehicle::freertos_tasks::controlTask,
+        "ControlTask",
+        vehicle::freertos_tasks::kControlStackSizeBytes,
+        &task_runtime,
+        vehicle::freertos_tasks::kControlPriority,
+        control_task_stack,
+        &control_task_storage,
+        vehicle::freertos_tasks::kControlCore);
+    if (control == nullptr) {
+        vehicle::freertos_tasks::postDiagnosticEvent(
+            task_runtime,
+            vehicle::freertos_tasks::DiagnosticCode::ControlTaskCreationFailed);
+        vTaskDelete(nullptr);
+    }
+    // 任务创建成功后发布句柄，DiagnosticsTask据此查询ControlTask栈余量。
+    task_runtime.control_task_handle.store(control, std::memory_order_release);
+
+    // app_main不再承担业务循环，任务创建完成后释放自身的动态任务槽位。
+    vTaskDelete(nullptr);
 }

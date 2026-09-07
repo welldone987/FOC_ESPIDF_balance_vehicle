@@ -43,7 +43,7 @@ constexpr std::uint8_t kGyroOffsetEnable = 0x80U;
 constexpr std::uint8_t kAccelRange2G = 0x03U;
 constexpr std::uint8_t kGyroRange1000Dps = 0x01U;
 constexpr std::uint8_t kOdrMask = 0x0FU;
-constexpr std::uint8_t kGyroOdr100Hz = 0x08U;
+constexpr std::uint8_t kOdr1600Hz = 0x0CU;
 
 constexpr float kComplementaryGyroWeight = 0.98f;
 constexpr float kComplementaryAccelWeight = 0.02f;
@@ -213,9 +213,18 @@ esp_err_t initialize()
     }
 
     // BMI160Gen::initialize() selects ±2g; the uploaded main.cpp then selects
-    // ±1000 dps and a 100 Hz gyro ODR. Preserve the existing filter-bandwidth
-    // bits while updating only the ODR nibble.
+    // ±1000 dps. Run both accelerometer and gyro DATA updates at 1600 Hz while
+    // preserving the existing filter-bandwidth bits outside the ODR nibble.
     result = writeRegister(kRegAccelRange, kAccelRange2G);
+    if (result != ESP_OK) {
+        return result;
+    }
+    result = readRegister(kRegAccelConf, &value);
+    if (result != ESP_OK) {
+        return result;
+    }
+    value = static_cast<std::uint8_t>((value & ~kOdrMask) | kOdr1600Hz);
+    result = writeRegister(kRegAccelConf, value);
     if (result != ESP_OK) {
         return result;
     }
@@ -227,7 +236,7 @@ esp_err_t initialize()
     if (result != ESP_OK) {
         return result;
     }
-    value = static_cast<std::uint8_t>((value & ~kOdrMask) | kGyroOdr100Hz);
+    value = static_cast<std::uint8_t>((value & ~kOdrMask) | kOdr1600Hz);
     result = writeRegister(kRegGyroConf, value);
     if (result != ESP_OK) {
         return result;
@@ -243,7 +252,7 @@ esp_err_t initialize()
     initialized = true;
     last_pitch_deg = 0.0f;
     previous_sample_us = 0;
-    ESP_LOGI(kTag, "BMI160 initialized: ±2g, ±1000 dps, gyro ODR 100 Hz");
+    ESP_LOGI(kTag, "BMI160 initialized: ±2g, ±1000 dps, accel/gyro ODR 1600 Hz");
     return ESP_OK;
 }
 
