@@ -34,10 +34,13 @@ endforeach()
 set(requires
     BSP
     bt
+    esp_event
+    esp_netif
     esp_timer
+    esp_wifi
     freertos
-    heap
     log
+    lwip
     nvs_flash
 )
 

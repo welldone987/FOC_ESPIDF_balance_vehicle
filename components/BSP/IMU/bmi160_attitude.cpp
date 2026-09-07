@@ -4,7 +4,6 @@
 #include <cstdint>
 
 #include "board_pins.hpp"
-#include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -15,7 +14,11 @@ namespace vehicle {
 namespace imu {
 namespace {
 
-constexpr char kTag[] = "bmi160";
+/*
+ * BMI160初始化路径配置PMU、加速度计、陀螺仪和FOC偏置。
+ * readAttitude()把I2C原始帧转换为物理量，再用时间戳维护互补滤波状态。
+ */
+
 constexpr float kPi = 3.14159265358979323846f;
 
 constexpr std::uint8_t kRegChipId = 0x00U;
@@ -48,17 +51,22 @@ constexpr std::uint8_t kOdr1600Hz = 0x0CU;
 constexpr float kComplementaryGyroWeight = 0.98f;
 constexpr float kComplementaryAccelWeight = 0.02f;
 
+// bus和device保持BMI160共享I2C0总线的模块级句柄。
 i2c_bus_handle_t bus = nullptr;
 i2c_bus_device_handle_t device = nullptr;
+// initialized控制公开读数接口是否允许访问传感器。
 bool initialized = false;
+// last_pitch_deg和previous_sample_us保存互补滤波器的跨周期状态。
 float last_pitch_deg = 0.0f;
 std::int64_t previous_sample_us = 0;
 
+// delayMs()使用FreeRTOS tick等待BMI160命令完成。
 void delayMs(std::uint32_t milliseconds)
 {
     vTaskDelay(pdMS_TO_TICKS(milliseconds));
 }
 
+// readRegister()从BMI160指定寄存器读取一个字节。
 esp_err_t readRegister(std::uint8_t address, std::uint8_t *value)
 {
     if (device == nullptr || value == nullptr) {
@@ -67,6 +75,7 @@ esp_err_t readRegister(std::uint8_t address, std::uint8_t *value)
     return i2c_bus_read_byte(device, address, value);
 }
 
+// readRegisters()从连续寄存器地址读取一段原始数据。
 esp_err_t readRegisters(std::uint8_t address, std::uint8_t *data, std::size_t length)
 {
     if (device == nullptr || data == nullptr || length == 0U) {
@@ -75,6 +84,7 @@ esp_err_t readRegisters(std::uint8_t address, std::uint8_t *data, std::size_t le
     return i2c_bus_read_bytes(device, address, length, data);
 }
 
+// writeRegister()向BMI160指定寄存器写入一个字节。
 esp_err_t writeRegister(std::uint8_t address, std::uint8_t value)
 {
     if (device == nullptr) {
@@ -83,6 +93,7 @@ esp_err_t writeRegister(std::uint8_t address, std::uint8_t value)
     return i2c_bus_write_byte(device, address, value);
 }
 
+// signedWord()按BMI160低字节在前的格式把两个字节还原为有符号计数。
 std::int16_t signedWord(const std::uint8_t *bytes)
 {
     const std::uint16_t value =
@@ -91,6 +102,7 @@ std::int16_t signedWord(const std::uint8_t *bytes)
     return static_cast<std::int16_t>(value);
 }
 
+// waitForPmuNormal()等待加速度计和陀螺仪都进入正常工作状态。
 esp_err_t waitForPmuNormal()
 {
     const std::int64_t deadline = esp_timer_get_time() + 250000LL;
@@ -108,6 +120,7 @@ esp_err_t waitForPmuNormal()
     return ESP_ERR_TIMEOUT;
 }
 
+// calibrateGyroOffset()启动BMI160陀螺仪FOC并保存硬件偏置使能位。
 esp_err_t calibrateGyroOffset()
 {
     std::uint8_t value = 0U;
@@ -171,20 +184,17 @@ esp_err_t initialize()
 
     bus = i2c_bus_create(I2C_NUM_0, &i2c_config);
     if (bus == nullptr) {
-        ESP_LOGE(kTag, "I2C0 creation failed");
         return ESP_FAIL;
     }
 
     device = i2c_bus_device_create(bus, config::kBmi160Address, 0U);
     if (device == nullptr) {
-        ESP_LOGE(kTag, "BMI160 I2C device creation failed");
         return ESP_FAIL;
     }
 
     std::uint8_t value = 0U;
     esp_err_t result = readRegister(kRegChipId, &value);
     if (result != ESP_OK || value != kChipId) {
-        ESP_LOGE(kTag, "BMI160 chip-id mismatch: 0x%02x", value);
         return result == ESP_OK ? ESP_ERR_NOT_FOUND : result;
     }
 
@@ -208,13 +218,11 @@ esp_err_t initialize()
 
     result = waitForPmuNormal();
     if (result != ESP_OK) {
-        ESP_LOGE(kTag, "BMI160 PMU did not reach normal mode");
         return result;
     }
 
-    // BMI160Gen::initialize() selects ±2g; the uploaded main.cpp then selects
-    // ±1000 dps. Run both accelerometer and gyro DATA updates at 1600 Hz while
-    // preserving the existing filter-bandwidth bits outside the ODR nibble.
+    // 量程保持参考实现的±2g和±1000dps，数据更新率保持1600Hz。
+    // 只替换ODR低四位，保留配置寄存器中的滤波带宽位。
     result = writeRegister(kRegAccelRange, kAccelRange2G);
     if (result != ESP_OK) {
         return result;
@@ -244,7 +252,6 @@ esp_err_t initialize()
 
     result = calibrateGyroOffset();
     if (result != ESP_OK) {
-        ESP_LOGE(kTag, "BMI160 gyro FOC calibration failed: %s", esp_err_to_name(result));
         return result;
     }
 
@@ -252,12 +259,12 @@ esp_err_t initialize()
     initialized = true;
     last_pitch_deg = 0.0f;
     previous_sample_us = 0;
-    ESP_LOGI(kTag, "BMI160 initialized: ±2g, ±1000 dps, accel/gyro ODR 1600 Hz");
     return ESP_OK;
 }
 
 void resetEstimator()
 {
+    // 重新建立积分起点，避免初始化前的时间间隔进入下一次姿态计算。
     last_pitch_deg = 0.0f;
     previous_sample_us = esp_timer_get_time();
 }
@@ -268,12 +275,14 @@ AttitudeSample readAttitude()
         return AttitudeSample{0.0f, 0.0f, false};
     }
 
+    // raw按陀螺仪Y轴、加速度计X/Y/Z轴的连续寄存器布局保存一帧数据。
     std::uint8_t raw[12]{};
     const esp_err_t result = readRegisters(kRegGyroData, raw, sizeof(raw));
     if (result != ESP_OK) {
         return AttitudeSample{last_pitch_deg, 0.0f, false};
     }
 
+    // 传感器原始计数按配置量程换算为g和deg/s。
     const float acceleration_x_g =
         static_cast<float>(signedWord(raw + 6U)) / config::kBmi160AccelerationScale;
     const float acceleration_y_g =
@@ -283,18 +292,21 @@ AttitudeSample readAttitude()
     const float gyro_y_deg_s =
         static_cast<float>(signedWord(raw + 2U)) / config::kBmi160GyroScale;
 
+    // 加速度计俯仰角使用X轴与重力方向的反正切，并保持车辆坐标符号。
     const float accelerometer_pitch_deg =
         std::atan2(
             acceleration_x_g,
             acceleration_z_g + std::fabs(acceleration_y_g)) *
         (-180.0f / kPi);
 
+    // interval_s是本次采样与上次采样之间的实测间隔，单位s。
     const std::int64_t now_us = esp_timer_get_time();
     float interval_s = 0.0f;
     if (previous_sample_us != 0 && now_us >= previous_sample_us) {
         interval_s = static_cast<float>(now_us - previous_sample_us) * 1.0e-6f;
     }
 
+    // 陀螺仪积分提供短期响应，加速度计角度修正长期漂移。
     last_pitch_deg =
         kComplementaryGyroWeight *
             (last_pitch_deg + gyro_y_deg_s * interval_s) +

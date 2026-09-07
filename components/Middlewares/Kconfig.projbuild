@@ -1,0 +1,19 @@
+menu "Vehicle Wi-Fi telemetry"
+
+    # station连接使用的网络名称；空值会使Wi-Fi初始化返回参数错误。
+    config VEHICLE_WIFI_SSID
+        string "Wi-Fi station SSID"
+        default ""
+
+    # station连接使用的密码；空值表示开放网络。
+    config VEHICLE_WIFI_PASSWORD
+        string "Wi-Fi station password"
+        default ""
+
+    # TCP遥测监听端口，service()只接受一个客户端连接。
+    config VEHICLE_WIFI_TELEMETRY_PORT
+        int "TCP telemetry port"
+        range 1 65535
+        default 3333
+
+endmenu

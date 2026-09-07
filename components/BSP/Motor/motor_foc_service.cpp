@@ -1,14 +1,16 @@
 #include "motor_foc_service.hpp"
 
 #include "board_pins.hpp"
-#include "esp_log.h"
 #include "esp_simplefoc.h"
 
 namespace vehicle {
 namespace motor {
 namespace {
 
-constexpr char kTag[] = "motor_foc";
+/*
+ * 电机模块把AS5600角度、MCPWM三相输出和SimpleFOC电机对象绑定到DengFOC V4硬件。
+ * runFocAndReadWheelState()按参考顺序消费上一周期目标并提供本周期轮速。
+ */
 
 // Values are intentionally kept identical to the minimal Arduino balancing-car reference.
 constexpr int kMotorPolePairs = 7;
@@ -23,6 +25,7 @@ constexpr int kMotor0McpwmGroup = 0;
 constexpr int kMotor1McpwmGroup = 1;
 
 // Espressif AS5600 constructor order is (I2C port, SCL, SDA).
+// left_sensor和right_sensor分别使用I2C0和I2C1，避免两个同地址AS5600冲突。
 AS5600 left_sensor{I2C_NUM_0, board::pins::kI2c0Scl, board::pins::kI2c0Sda};
 AS5600 right_sensor{I2C_NUM_1, board::pins::kI2c1Scl, board::pins::kI2c1Sda};
 
@@ -43,8 +46,10 @@ BLDCDriver3PWM right_driver{
     board::pins::kMotor1Enable,
 };
 
+// initialized表示编码器、驱动器和FOC对齐已经完成。
 bool initialized = false;
 
+// disableDrivers()同时关闭左右三相驱动器的输出使能。
 void disableDrivers()
 {
     left_driver.disable();
@@ -59,17 +64,14 @@ esp_err_t initialize()
         return ESP_OK;
     }
 
-    ESP_LOGI(kTag, "Initializing AS5600 sensors and esp_simplefoc 1.4.1 motor layer");
-
-    // AS5600 M0 uses I2C0; AS5600 M1 uses I2C1. BMI160 will later share I2C0.
+    // M0 AS5600使用I2C0，M1 AS5600使用I2C1；BMI160随后与M0共享I2C0。
     left_sensor.init();
     right_sensor.init();
 
     left_motor.linkSensor(&left_sensor);
     right_motor.linkSensor(&right_sensor);
 
-    // Preserve the reference SimpleFOC velocity-estimator PID values even though
-    // the balancing application currently commands voltage-mode torque.
+    // 保留参考实现的轮速估计PID；平衡应用当前仍以电压模式力矩作为执行量。
     left_motor.PID_velocity.P = kVelocityPidP;
     left_motor.PID_velocity.I = kVelocityPidI;
     left_motor.PID_velocity.D = kVelocityPidD;
@@ -82,15 +84,13 @@ esp_err_t initialize()
     left_driver.voltage_power_supply = kSupplyVoltageV;
     right_driver.voltage_power_supply = kSupplyVoltageV;
 
-    // Explicit group assignment makes the dual-motor hardware resource mapping deterministic.
+    // 显式分配MCPWM组，使双电机硬件资源映射固定。
     if (left_driver.init(kMotor0McpwmGroup) == 0) {
-        ESP_LOGE(kTag, "M0 MCPWM group %d initialization failed", kMotor0McpwmGroup);
         return ESP_FAIL;
     }
     left_motor.linkDriver(&left_driver);
 
     if (right_driver.init(kMotor1McpwmGroup) == 0) {
-        ESP_LOGE(kTag, "M1 MCPWM group %d initialization failed", kMotor1McpwmGroup);
         left_driver.disable();
         return ESP_FAIL;
     }
@@ -101,22 +101,19 @@ esp_err_t initialize()
     left_motor.controller = MotionControlType::torque;
     right_motor.controller = MotionControlType::torque;
 
-    // Preserve the reference startup order: M1 then M0.
+    // 保留参考启动顺序：先初始化M1，再初始化M0。
     if (right_motor.init() == 0 || left_motor.init() == 0) {
-        ESP_LOGE(kTag, "BLDC motor initialization failed");
         disableDrivers();
         return ESP_FAIL;
     }
 
-    // initFOC performs encoder-direction/electrical-zero alignment and can move the wheels.
+    // initFOC()执行编码器方向和电角度零点对齐，可能驱动车轮转动。
     if (right_motor.initFOC() == 0 || left_motor.initFOC() == 0) {
-        ESP_LOGE(kTag, "FOC alignment failed");
         disableDrivers();
         return ESP_FAIL;
     }
 
     initialized = true;
-    ESP_LOGI(kTag, "Dual voltage-torque FOC initialized");
     return ESP_OK;
 }
 
@@ -126,7 +123,7 @@ WheelState runFocAndReadWheelState()
         return WheelState{0.0f, 0.0f, false};
     }
 
-    // Keep the Arduino reference ordering: the previously staged target is consumed here.
+    // 先执行FOC，再由move()消费stageTarget()在上一周期写入的目标。
     left_motor.loopFOC();
     right_motor.loopFOC();
     left_motor.move();

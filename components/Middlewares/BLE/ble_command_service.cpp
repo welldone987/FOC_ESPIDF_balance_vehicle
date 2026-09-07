@@ -5,7 +5,6 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "esp_log.h"
 #include "nvs_flash.h"
 #include "vehicle_config.hpp"
 
@@ -25,7 +24,10 @@ namespace vehicle {
 namespace ble {
 namespace {
 
-constexpr char kTag[] = "ble_command";
+/*
+ * BLE回调负责协议解析和连接状态发布，控制任务只读取CommandSnapshot。
+ * state_epoch用序列锁保护多原子字段的一致快照，readable_value保留最近一次特征写入。
+ */
 
 // Nordic-UART-compatible UUID byte order. These are exactly the UUIDs used by
 // the reference Arduino BLE service.
@@ -48,22 +50,27 @@ std::atomic<std::int32_t> raw_throttle{0};
 std::atomic<std::uint32_t> command_sequence{0U};
 std::atomic<bool> connected{false};
 
+// initialized和own_address_type保存NimBLE主机初始化后的服务状态。
 bool initialized = false;
 std::uint8_t own_address_type = BLE_OWN_ADDR_PUBLIC;
 
+// readable_value保存网页端读取特征时应返回的最近一次写入内容。
 std::uint8_t readable_value[config::kMaximumBleCommandLength + 1U]{};
 std::uint16_t readable_value_length = 0U;
 
+// beginStateWrite()把快照版本置为写入态，使读取方跳过中间状态。
 void beginStateWrite()
 {
     state_epoch.fetch_add(1U, std::memory_order_acq_rel);
 }
 
+// endStateWrite()发布偶数版本，表示本次命令或连接状态写入完成。
 void endStateWrite()
 {
     state_epoch.fetch_add(1U, std::memory_order_release);
 }
 
+// publishConnection()原子发布BLE连接状态。
 void publishConnection(bool is_connected)
 {
     beginStateWrite();
@@ -71,6 +78,7 @@ void publishConnection(bool is_connected)
     endStateWrite();
 }
 
+// publishCommand()原子发布协议中的原始整数，并按需递增命令序号。
 void publishCommand(std::int32_t steering_value,
                     std::int32_t throttle_value,
                     bool increment_sequence)
@@ -88,6 +96,7 @@ void publishCommand(std::int32_t steering_value,
 
 int startAdvertising();
 
+// gapEvent()处理连接生命周期和广播结束事件。
 int gapEvent(ble_gap_event *event, void *)
 {
     if (event == nullptr) {
@@ -98,16 +107,13 @@ int gapEvent(ble_gap_event *event, void *)
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
             publishConnection(true);
-            ESP_LOGI(kTag, "BLE client connected");
         } else {
-            ESP_LOGW(kTag, "BLE connection failed, status=%d", event->connect.status);
             (void)startAdvertising();
         }
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
         publishConnection(false);
-        ESP_LOGI(kTag, "BLE client disconnected; restarting advertising");
         (void)startAdvertising();
         return 0;
 
@@ -120,6 +126,7 @@ int gapEvent(ble_gap_event *event, void *)
     }
 }
 
+// startAdvertising()发布设备名和服务UUID，并启动可连接广播。
 int startAdvertising()
 {
     ble_hs_adv_fields advertising_fields{};
@@ -131,7 +138,6 @@ int startAdvertising()
 
     int rc = ble_gap_adv_set_fields(&advertising_fields);
     if (rc != 0) {
-        ESP_LOGE(kTag, "ble_gap_adv_set_fields failed: %d", rc);
         return rc;
     }
 
@@ -142,7 +148,6 @@ int startAdvertising()
 
     rc = ble_gap_adv_rsp_set_fields(&scan_response_fields);
     if (rc != 0) {
-        ESP_LOGE(kTag, "ble_gap_adv_rsp_set_fields failed: %d", rc);
         return rc;
     }
 
@@ -152,36 +157,31 @@ int startAdvertising()
 
     rc = ble_gap_adv_start(
         own_address_type, nullptr, BLE_HS_FOREVER, &parameters, gapEvent, nullptr);
-    if (rc != 0 && rc != BLE_HS_EALREADY) {
-        ESP_LOGE(kTag, "ble_gap_adv_start failed: %d", rc);
-    }
     return rc == BLE_HS_EALREADY ? 0 : rc;
 }
 
-void onReset(int reason)
-{
-    ESP_LOGW(kTag, "NimBLE host reset, reason=%d", reason);
-}
+// onReset()满足NimBLE复位回调接口；复位信息由上层诊断路径处理。
+void onReset(int) {}
 
+// onSync()取得本机地址类型后开始广播。
 void onSync()
 {
     const int rc = ble_hs_id_infer_auto(0, &own_address_type);
     if (rc != 0) {
-        ESP_LOGE(kTag, "ble_hs_id_infer_auto failed: %d", rc);
         return;
     }
 
-    if (startAdvertising() == 0) {
-        ESP_LOGI(kTag, "BLE advertising started as '%s'", config::kBleDeviceName);
-    }
+    (void)startAdvertising();
 }
 
+// hostTask()运行NimBLE主机事件循环，退出后释放其FreeRTOS资源。
 void hostTask(void *)
 {
     nimble_port_run();
     nimble_port_freertos_deinit();
 }
 
+// characteristicAccess()保持特征可读，并把写入的“转向,油门”解析为命令快照。
 int characteristicAccess(std::uint16_t,
                          std::uint16_t,
                          ble_gatt_access_ctxt *context,
@@ -215,14 +215,13 @@ int characteristicAccess(std::uint16_t,
         return BLE_ATT_ERR_UNLIKELY;
     }
 
-    // Keep the characteristic readable value aligned with the most recent write,
-    // as Arduino BLECharacteristic does after a client write.
+    // 保持可读特征与最近一次写入一致，兼容Arduino BLECharacteristic行为。
     if (copied > 0U) {
         std::memcpy(readable_value, incoming, copied);
     }
     readable_value_length = copied;
 
-    // The reference ignores an empty write.
+    // 空写入只更新可读值，不改变控制命令。
     if (copied == 0U) {
         return 0;
     }
@@ -230,8 +229,7 @@ int characteristicAccess(std::uint16_t,
     incoming[copied] = '\0';
     char *separator = std::strchr(reinterpret_cast<char *>(incoming), ',');
 
-    // The reference explicitly zeros both commands when a non-empty write has
-    // no comma separator.
+    // 非空写入缺少逗号时清零两路原始命令，保持参考实现语义。
     if (separator == nullptr) {
         publishCommand(0, 0, false);
         return 0;
@@ -249,6 +247,7 @@ int characteristicAccess(std::uint16_t,
     return 0;
 }
 
+// buildGattDatabase()建立一个可读写的命令特征和主服务定义。
 void buildGattDatabase()
 {
     characteristics[0].uuid = &command_uuid.u;
@@ -268,17 +267,14 @@ esp_err_t initialize()
         return ESP_OK;
     }
 
-    // NimBLE examples initialize NVS before starting the controller. Do not erase
-    // NVS automatically on failure: persistence must never be destroyed implicitly.
+    // 先初始化NVS再启动NimBLE控制器；失败时不自动擦除NVS持久化数据。
     const esp_err_t nvs_result = nvs_flash_init();
     if (nvs_result != ESP_OK) {
-        ESP_LOGE(kTag, "nvs_flash_init failed: %s", esp_err_to_name(nvs_result));
         return nvs_result;
     }
 
     const esp_err_t nimble_result = nimble_port_init();
     if (nimble_result != ESP_OK) {
-        ESP_LOGE(kTag, "nimble_port_init failed: %s", esp_err_to_name(nimble_result));
         return nimble_result;
     }
 
@@ -288,19 +284,16 @@ esp_err_t initialize()
 
     int rc = ble_svc_gap_device_name_set(config::kBleDeviceName);
     if (rc != 0) {
-        ESP_LOGE(kTag, "ble_svc_gap_device_name_set failed: %d", rc);
         return ESP_FAIL;
     }
 
     rc = ble_gatts_count_cfg(services);
     if (rc != 0) {
-        ESP_LOGE(kTag, "ble_gatts_count_cfg failed: %d", rc);
         return ESP_FAIL;
     }
 
     rc = ble_gatts_add_svcs(services);
     if (rc != 0) {
-        ESP_LOGE(kTag, "ble_gatts_add_svcs failed: %d", rc);
         return ESP_FAIL;
     }
 
@@ -316,16 +309,13 @@ esp_err_t initialize()
     initialized = true;
     nimble_port_freertos_init(hostTask);
 
-    ESP_LOGI(kTag,
-             "Native NimBLE command service initialized (%s / %s)",
-             config::kBleServiceUuid,
-             config::kBleCommandUuid);
     return ESP_OK;
 }
 
 CommandSnapshot latestCommand()
 {
     for (;;) {
+        // 奇数版本表示BLE回调正在写入，读取方等待偶数版本后再采样字段。
         const std::uint32_t before = state_epoch.load(std::memory_order_acquire);
         if ((before & 1U) != 0U) {
             continue;
@@ -344,6 +334,7 @@ CommandSnapshot latestCommand()
             continue;
         }
 
+        // 原始整数按网页协议的满量程换算为控制器使用的物理量。
         return CommandSnapshot{
             config::kMaximumSteeringVoltageV *
                 static_cast<float>(steering_value) /
