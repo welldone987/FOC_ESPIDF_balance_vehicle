@@ -29,6 +29,9 @@ inline constexpr float kMaximumThrottleVelocityRadS = 10.0f;
 inline constexpr float kMaximumSteeringVoltageV = 10.0f;
 inline constexpr float kBleFullScaleSteering = 1500.0f;
 inline constexpr float kBleFullScaleThrottle = 40.0f;
+// 新协议100%转向保持原网页X=100的实际差分电压，避免放大15倍。
+inline constexpr float kRemoteSteeringVoltageV =
+    kMaximumSteeringVoltageV * 100.0f / kBleFullScaleSteering;
 
 // BMI160通过I2C0读取；原始加速度和陀螺仪计数分别按这里的量程因子换算。
 inline constexpr std::uint8_t kBmi160Address = 0x69U;

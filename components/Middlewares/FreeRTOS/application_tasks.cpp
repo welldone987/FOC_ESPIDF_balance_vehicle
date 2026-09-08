@@ -23,9 +23,10 @@ constexpr std::uint32_t kWifiPeriodMs = 50U;
 constexpr std::uint32_t kDiagnosticsPeriodMs = 5000U;
 
 // stopControl()关闭电机输出后挂起控制任务，避免故障状态继续驱动执行器。
-[[noreturn]] void stopControl()
+[[noreturn]] void stopControl(std::uint8_t fault = 1U, bool emergency = false)
 {
     motor::disableOutputs();
+    ble::publishFault(fault, emergency);
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1000U));
     }
@@ -74,7 +75,7 @@ void controlTask(void *argument)
     }
     diagnostics::logInitialization("Control timer", result);
     if (result != ESP_OK) {
-        stopControl();
+        stopControl(3U);
     }
 
     std::uint32_t sequence = 0U;
@@ -83,16 +84,21 @@ void controlTask(void *argument)
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         // cycle_time_us成为遥测帧的设备时间戳，单位us。
         const std::int64_t cycle_time_us = esp_timer_get_time();
+        // 急停在消费上周期电机目标之前检查；无线与调度延迟仍需实测。
+        const ble::CommandSnapshot command = ble::latestCommand();
+        if (command.mode == ble::RemoteMode::emergency) { stopControl(0U, true); }
+        if (command.mode != ble::RemoteMode::active) {
+            controller.steering_filter.previous_output = 0.0f;
+        }
         // runFocAndReadWheelState()先消费上一周期stageTarget()写入的目标。
         const motor::WheelState wheels = motor::runFocAndReadWheelState();
         // 姿态读取紧跟轮速读取，结果随后进入同一轮控制计算。
         const imu::AttitudeSample attitude = imu::readAttitude();
         if (!wheels.valid || !attitude.valid) {
-            stopControl();
+            stopControl(2U);
         }
 
         // BLE只提供最近命令快照，不在高频控制任务中执行通信等待。
-        const ble::CommandSnapshot command = ble::latestCommand();
         const control::ControlOutput output = control::update(
             controller,
             control::ControlInput{
@@ -108,6 +114,11 @@ void controlTask(void *argument)
 
         // sequence递增后，遥测任务可识别新的控制快照。
         ++sequence;
+        ble::publishStatus(ble::StatusSnapshot{
+            command, cycle_time_us, sequence, attitude.pitch_deg,
+            config::kMotor0Direction * wheels.left_velocity_rad_s,
+            config::kMotor1Direction * wheels.right_velocity_rad_s, 0U, true,
+        });
         const wifi_telemtry::TelemetrySnapshot snapshot{
             cycle_time_us,
             sequence,

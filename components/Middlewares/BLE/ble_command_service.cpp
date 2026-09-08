@@ -1,9 +1,14 @@
 #include "ble_command_service.hpp"
 
-#include <atomic>
+#include <algorithm>
+#include <bit>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
+#include <string_view>
+
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "nvs_flash.h"
 #include "vehicle_config.hpp"
@@ -24,72 +29,125 @@ namespace vehicle {
 namespace ble {
 namespace {
 
-/*
- * BLE回调负责协议解析和连接状态发布，控制任务只读取CommandSnapshot。
- * state_epoch用序列锁保护多原子字段的一致快照，readable_value保留最近一次特征写入。
- */
-// UUID宏按NimBLE字节序表达网页端使用的服务和命令特征。
-#define BALANCE_SERVICE_UUID_BYTES \
+// 保留旧命令特征；新命令使用独立UUID，避免静默改变旧协议量纲。
+#define BALANCE_UUID_BYTES(id) \
     0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, \
-    0x93, 0xf3, 0xa3, 0xb5, 0x01, 0x00, 0x40, 0x6e
-#define BALANCE_COMMAND_UUID_BYTES \
-    0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, \
-    0x93, 0xf3, 0xa3, 0xb5, 0x02, 0x00, 0x40, 0x6e
-
-ble_uuid128_t service_uuid = BLE_UUID128_INIT(BALANCE_SERVICE_UUID_BYTES);
-ble_uuid128_t command_uuid = BLE_UUID128_INIT(BALANCE_COMMAND_UUID_BYTES);
-
-ble_gatt_chr_def characteristics[2]{};
+    0x93, 0xf3, 0xa3, 0xb5, id, 0x00, 0x40, 0x6e
+ble_uuid128_t service_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x01));
+ble_uuid128_t command_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x02));
+ble_uuid128_t command_v2_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x04));
+ble_uuid128_t status_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x03));
+ble_gatt_chr_def characteristics[4]{};
 ble_gatt_svc_def services[2]{};
 
-std::atomic<std::uint32_t> state_epoch{0U};
-std::atomic<std::int32_t> raw_steering{0};
-std::atomic<std::int32_t> raw_throttle{0};
-std::atomic<std::uint32_t> command_sequence{0U};
-std::atomic<bool> connected{false};
-
-// initialized和own_address_type保存NimBLE主机初始化后的服务状态。
+// 临界区只复制/更新固定长度状态，不在锁内格式化、分配内存或调用NimBLE。
+portMUX_TYPE state_lock = portMUX_INITIALIZER_UNLOCKED;
+RemoteState remote_state{};
+StatusSnapshot latest_status{};
+std::uint32_t connection_epoch{};
+// 以下连接/订阅/通知资源仅由NimBLE主机访问。
+ble_npl_callout status_timer{};
+std::uint16_t status_handle{};
+bool subscribed{};
+bool notify_pending{};
 bool initialized = false;
 std::uint8_t own_address_type = BLE_OWN_ADDR_PUBLIC;
-
-// readable_value保存网页端读取特征时应返回的最近一次写入内容。
+std::uint16_t connection_handle = BLE_HS_CONN_HANDLE_NONE;
 std::uint8_t readable_value[config::kMaximumBleCommandLength + 1U]{};
 std::uint16_t readable_value_length = 0U;
 
-// beginStateWrite()把快照版本置为写入态，使读取方跳过中间状态。
-void beginStateWrite()
+void publishConnection(bool connected)
 {
-    state_epoch.fetch_add(1U, std::memory_order_acq_rel);
+    portENTER_CRITICAL(&state_lock);
+    remoteConnection(remote_state, connected);
+    ++connection_epoch;
+    portEXIT_CRITICAL(&state_lock);
 }
 
-// endStateWrite()发布偶数版本，表示本次命令或连接状态写入完成。
-void endStateWrite()
+// 手动编码小端字段，不把C++结构体内存布局当作无线协议。
+void put16(std::uint8_t *packet, std::size_t offset, std::uint16_t value)
 {
-    state_epoch.fetch_add(1U, std::memory_order_release);
+    packet[offset] = static_cast<std::uint8_t>(value);
+    packet[offset + 1] = static_cast<std::uint8_t>(value >> 8);
 }
 
-// publishConnection()原子发布BLE连接状态。
-void publishConnection(bool is_connected)
+// 按IEEE-754位模式检查，避免fast-math下isfinite被消除及NaN转整数。
+constexpr bool finiteTelemetry(float value)
 {
-    beginStateWrite();
-    connected.store(is_connected, std::memory_order_relaxed);
-    endStateWrite();
+    return (std::bit_cast<std::uint32_t>(value) & 0x7f800000U) != 0x7f800000U;
+}
+static_assert(!finiteTelemetry(std::bit_cast<float>(0x7fc00000U)));
+static_assert(!finiteTelemetry(std::bit_cast<float>(0x7f800000U)));
+static_assert(finiteTelemetry(-12.34f));
+
+std::int16_t scaled16(float value, float scale)
+{
+    return static_cast<std::int16_t>(std::clamp(value * scale, -32768.0f, 32767.0f));
 }
 
-// publishCommand()原子发布协议中的原始整数，并按需递增命令序号。
-void publishCommand(std::int32_t steering_value,
-                    std::int32_t throttle_value,
-                    bool increment_sequence)
+void encodeStatus(std::uint8_t (&packet)[20])
 {
-    beginStateWrite();
-    raw_steering.store(steering_value, std::memory_order_relaxed);
-    raw_throttle.store(throttle_value, std::memory_order_relaxed);
-    if (increment_sequence) {
-        command_sequence.store(
-            command_sequence.load(std::memory_order_relaxed) + 1U,
-            std::memory_order_relaxed);
+    const std::int64_t now_us = esp_timer_get_time();
+    portENTER_CRITICAL(&state_lock);
+    const StatusSnapshot status = latest_status;
+    const RemoteState remote = remote_state;
+    const std::uint32_t epoch = connection_epoch;
+    portEXIT_CRITICAL(&state_lock);
+    const bool same_session = status.command.connection_epoch == epoch;
+    const bool stale = status.sampled_us == 0 || now_us - status.sampled_us >= kCommandTimeoutUs;
+    const bool valid = status.sensors_valid && !stale && same_session &&
+        finiteTelemetry(status.pitch_deg) && finiteTelemetry(status.left_velocity_rad_s) &&
+        finiteTelemetry(status.right_velocity_rad_s) &&
+        finiteTelemetry(status.command.throttle_velocity_rad_s) &&
+        finiteTelemetry(status.command.steering_voltage_v);
+    RemoteMode mode = status.command.mode;
+    if (mode != RemoteMode::fault && mode != RemoteMode::emergency && !same_session) {
+        mode = remote.connected ? RemoteMode::idle : RemoteMode::disconnected;
     }
-    endStateWrite();
+    packet[0] = 2;
+    packet[1] = static_cast<std::uint8_t>(mode);
+    packet[2] = (remote.connected ? 1U : 0U) | (remote.command.legacy ? 2U : 0U) |
+                (valid ? 4U : 0U) | (same_session && status.command.sequence_valid ? 8U : 0U) |
+                (stale ? 16U : 0U);
+    packet[3] = status.fault;
+    put16(packet, 4, same_session ? status.command.sequence : 0);
+    const auto age_ms = remote.has_command ? (now_us - remote.received_us) / 1000 : 65535;
+    put16(packet, 6, static_cast<std::uint16_t>(std::clamp<std::int64_t>(age_ms, 0, 65535)));
+    put16(packet, 8, valid ? static_cast<std::uint16_t>(scaled16(status.pitch_deg, 100.0f)) : 0);
+    put16(packet, 10, valid ? static_cast<std::uint16_t>(scaled16(status.left_velocity_rad_s, 100.0f)) : 0);
+    put16(packet, 12, valid ? static_cast<std::uint16_t>(scaled16(status.right_velocity_rad_s, 100.0f)) : 0);
+    put16(packet, 14, valid ? static_cast<std::uint16_t>(scaled16(status.command.throttle_velocity_rad_s, 100.0f)) : 0);
+    put16(packet, 16, valid ? static_cast<std::uint16_t>(scaled16(status.command.steering_voltage_v, 1000.0f)) : 0);
+    put16(packet, 18, static_cast<std::uint16_t>(status.sample_sequence));
+}
+
+int statusAccess(std::uint16_t, std::uint16_t, ble_gatt_access_ctxt *context, void *)
+{
+    if (context == nullptr || context->op != BLE_GATT_ACCESS_OP_READ_CHR) {
+        return BLE_ATT_ERR_READ_NOT_PERMITTED;
+    }
+    std::uint8_t packet[20]{};
+    encodeStatus(packet);
+    return os_mbuf_append(context->om, packet, sizeof(packet)) == 0
+        ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+}
+
+// 回调运行在NimBLE主机事件队列；不为遥测新增任务或积压历史帧。
+void notifyStatus(ble_npl_event *)
+{
+    if (subscribed && !notify_pending && connection_handle != BLE_HS_CONN_HANDLE_NONE) {
+        std::uint8_t packet[20]{};
+        encodeStatus(packet);
+        os_mbuf *buffer = ble_hs_mbuf_from_flat(packet, sizeof(packet));
+        if (buffer != nullptr) {
+            notify_pending = true;
+            // notify_custom无论成功与否都会消费mbuf。
+            if (ble_gatts_notify_custom(connection_handle, status_handle, buffer) != 0) {
+                notify_pending = false;
+            }
+        }
+    }
+    (void)ble_npl_callout_reset(&status_timer, ble_npl_time_ms_to_ticks32(100));
 }
 
 int startAdvertising();
@@ -104,6 +162,11 @@ int gapEvent(ble_gap_event *event, void *)
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
+            if (connection_handle != BLE_HS_CONN_HANDLE_NONE) {
+                (void)ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                return 0;
+            }
+            connection_handle = event->connect.conn_handle;
             publishConnection(true);
         } else {
             (void)startAdvertising();
@@ -111,10 +174,26 @@ int gapEvent(ble_gap_event *event, void *)
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
+        if (event->disconnect.conn.conn_handle != connection_handle) { return 0; }
+        connection_handle = BLE_HS_CONN_HANDLE_NONE;
+        subscribed = false;
+        notify_pending = false;
         publishConnection(false);
         (void)startAdvertising();
         return 0;
 
+    case BLE_GAP_EVENT_SUBSCRIBE:
+        if (event->subscribe.conn_handle == connection_handle &&
+            event->subscribe.attr_handle == status_handle) {
+            subscribed = event->subscribe.cur_notify != 0;
+        }
+        return 0;
+    case BLE_GAP_EVENT_NOTIFY_TX:
+        if (event->notify_tx.conn_handle == connection_handle &&
+            event->notify_tx.attr_handle == status_handle) {
+            notify_pending = false;
+        }
+        return 0;
     case BLE_GAP_EVENT_ADV_COMPLETE:
         (void)startAdvertising();
         return 0;
@@ -159,7 +238,14 @@ int startAdvertising()
 }
 
 // onReset()满足NimBLE复位回调接口；复位信息由上层诊断路径处理。
-void onReset(int) {}
+void onReset(int)
+{
+    connection_handle = BLE_HS_CONN_HANDLE_NONE;
+    subscribed = false;
+    notify_pending = false;
+    ble_npl_callout_stop(&status_timer);
+    publishConnection(false);
+}
 
 // onSync()取得本机地址类型后开始广播。
 void onSync()
@@ -170,6 +256,7 @@ void onSync()
     }
 
     (void)startAdvertising();
+    (void)ble_npl_callout_reset(&status_timer, ble_npl_time_ms_to_ticks32(100));
 }
 
 // hostTask()运行NimBLE主机事件循环，退出后释放其FreeRTOS资源。
@@ -179,69 +266,43 @@ void hostTask(void *)
     nimble_port_freertos_deinit();
 }
 
-// characteristicAccess()保持特征可读，并把写入的“转向,油门”解析为命令快照。
-int characteristicAccess(std::uint16_t,
+// 一个WRITE就是一条完整命令；严格长度解析拒绝尾随字符和嵌入NUL。
+int characteristicAccess(std::uint16_t conn_handle,
                          std::uint16_t,
                          ble_gatt_access_ctxt *context,
                          void *)
 {
-    if (context == nullptr || context->om == nullptr) {
-        return BLE_ATT_ERR_UNLIKELY;
+    if (context == nullptr || context->om == nullptr) { return BLE_ATT_ERR_UNLIKELY; }
+    const bool legacy = ble_uuid_cmp(context->chr->uuid, &command_uuid.u) == 0;
+    if (context->op == BLE_GATT_ACCESS_OP_READ_CHR && legacy) {
+        return os_mbuf_append(context->om, readable_value, readable_value_length) == 0
+                   ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
     }
-
-    if (context->op == BLE_GATT_ACCESS_OP_READ_CHR) {
-        return os_mbuf_append(
-                   context->om, readable_value, readable_value_length) == 0
-                   ? 0
-                   : BLE_ATT_ERR_INSUFFICIENT_RES;
+    if (context->op != BLE_GATT_ACCESS_OP_WRITE_CHR || conn_handle != connection_handle) {
+        return BLE_ATT_ERR_WRITE_NOT_PERMITTED;
     }
-
-    if (context->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
-        return BLE_ATT_ERR_UNLIKELY;
-    }
-
-    const std::uint16_t packet_length = OS_MBUF_PKTLEN(context->om);
-    if (packet_length > config::kMaximumBleCommandLength) {
+    const std::uint16_t length = OS_MBUF_PKTLEN(context->om);
+    if (length == 0 || length > config::kMaximumBleCommandLength) {
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
-
-    std::uint8_t incoming[config::kMaximumBleCommandLength + 1U]{};
-    std::uint16_t copied = 0U;
-    const int flatten_result = ble_hs_mbuf_to_flat(
-        context->om, incoming, packet_length, &copied);
-    if (flatten_result != 0 || copied != packet_length) {
+    char incoming[config::kMaximumBleCommandLength]{};
+    std::uint16_t copied = 0;
+    if (ble_hs_mbuf_to_flat(context->om, incoming, length, &copied) != 0 || copied != length) {
         return BLE_ATT_ERR_UNLIKELY;
     }
-
-    // 保持可读特征与最近一次写入一致，兼容Arduino BLECharacteristic行为。
-    if (copied > 0U) {
-        std::memcpy(readable_value, incoming, copied);
+    RemoteCommand command{};
+    if (!parseCommand(std::string_view(incoming, length), legacy, command)) {
+        return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
     }
-    readable_value_length = copied;
-
-    // 空写入只更新可读值，不改变控制命令。
-    if (copied == 0U) {
-        return 0;
+    const std::int64_t now_us = esp_timer_get_time();
+    portENTER_CRITICAL(&state_lock);
+    const bool accepted = acceptCommand(remote_state, command, now_us);
+    portEXIT_CRITICAL(&state_lock);
+    if (!accepted) { return BLE_ATT_ERR_VALUE_NOT_ALLOWED; }
+    if (legacy) {
+        std::memcpy(readable_value, incoming, length);
+        readable_value_length = length;
     }
-
-    incoming[copied] = '\0';
-    char *separator = std::strchr(reinterpret_cast<char *>(incoming), ',');
-
-    // 非空写入缺少逗号时清零两路原始命令，保持参考实现语义。
-    if (separator == nullptr) {
-        publishCommand(0, 0, false);
-        return 0;
-    }
-
-    *separator = '\0';
-    const long steering_value = std::strtol(
-        reinterpret_cast<char *>(incoming), nullptr, 10);
-    const long throttle_value = std::strtol(separator + 1, nullptr, 10);
-
-    publishCommand(
-        static_cast<std::int32_t>(steering_value),
-        static_cast<std::int32_t>(throttle_value),
-        true);
     return 0;
 }
 
@@ -271,6 +332,15 @@ esp_err_t initialize()
     characteristics[0].access_cb = characteristicAccess;
     characteristics[0].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE;
 
+    characteristics[1].uuid = &command_v2_uuid.u;
+    characteristics[1].access_cb = characteristicAccess;
+    characteristics[1].flags = BLE_GATT_CHR_F_WRITE;
+
+    characteristics[2].uuid = &status_uuid.u;
+    characteristics[2].access_cb = statusAccess;
+    characteristics[2].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY;
+    characteristics[2].val_handle = &status_handle;
+
     services[0].type = BLE_GATT_SVC_TYPE_PRIMARY;
     services[0].uuid = &service_uuid.u;
     services[0].characteristics = characteristics;
@@ -296,6 +366,9 @@ esp_err_t initialize()
         sizeof(config::kBleInitialValue) - 1U);
     readable_value_length = sizeof(config::kBleInitialValue) - 1U;
 
+    if (ble_npl_callout_init(&status_timer, nimble_port_get_dflt_eventq(), notifyStatus, nullptr) != 0) {
+        return ESP_FAIL;
+    }
     ble_hs_cfg.reset_cb = onReset;
     ble_hs_cfg.sync_cb = onSync;
 
@@ -307,38 +380,45 @@ esp_err_t initialize()
 
 CommandSnapshot latestCommand()
 {
-    for (;;) {
-        // 奇数版本表示BLE回调正在写入，读取方等待偶数版本后再采样字段。
-        const std::uint32_t before = state_epoch.load(std::memory_order_acquire);
-        if ((before & 1U) != 0U) {
-            continue;
-        }
+    const std::int64_t now_us = esp_timer_get_time();
+    portENTER_CRITICAL(&state_lock);
+    stepRemote(remote_state, now_us);
+    const RemoteState state = remote_state;
+    const std::uint32_t epoch = connection_epoch;
+    portEXIT_CRITICAL(&state_lock);
+    const bool active = state.mode == RemoteMode::active;
+    const float steering_scale = state.command.legacy
+        ? config::kMaximumSteeringVoltageV / config::kBleFullScaleSteering
+        : config::kRemoteSteeringVoltageV / 100.0f;
+    const float throttle_scale = state.command.legacy
+        ? config::kMaximumThrottleVelocityRadS / config::kBleFullScaleThrottle
+        : config::kMaximumThrottleVelocityRadS / 100.0f;
+    return CommandSnapshot{
+        active ? std::clamp(state.command.steering * steering_scale,
+                           -config::kMaximumSteeringVoltageV, config::kMaximumSteeringVoltageV) : 0.0f,
+        active ? std::clamp(state.command.throttle * throttle_scale,
+                           -config::kMaximumThrottleVelocityRadS, config::kMaximumThrottleVelocityRadS) : 0.0f,
+        state.applied_sequence, state.connected, state.mode,
+        state.has_command ? now_us - state.received_us : -1,
+        state.command.legacy, state.has_applied, epoch,
+    };
+}
 
-        const std::int32_t steering_value =
-            raw_steering.load(std::memory_order_relaxed);
-        const std::int32_t throttle_value =
-            raw_throttle.load(std::memory_order_relaxed);
-        const std::uint32_t sequence =
-            command_sequence.load(std::memory_order_relaxed);
-        const bool is_connected = connected.load(std::memory_order_relaxed);
+void publishStatus(const StatusSnapshot &status)
+{
+    portENTER_CRITICAL(&state_lock);
+    if (status.command.connection_epoch == connection_epoch) { latest_status = status; }
+    portEXIT_CRITICAL(&state_lock);
+}
 
-        const std::uint32_t after = state_epoch.load(std::memory_order_acquire);
-        if (before != after) {
-            continue;
-        }
-
-        // 原始整数按网页协议的满量程换算为控制器使用的物理量。
-        return CommandSnapshot{
-            config::kMaximumSteeringVoltageV *
-                static_cast<float>(steering_value) /
-                config::kBleFullScaleSteering,
-            config::kMaximumThrottleVelocityRadS *
-                static_cast<float>(throttle_value) /
-                config::kBleFullScaleThrottle,
-            sequence,
-            is_connected,
-        };
-    }
+void publishFault(std::uint8_t fault, bool emergency)
+{
+    portENTER_CRITICAL(&state_lock);
+    latest_status = StatusSnapshot{};
+    latest_status.command.mode = emergency ? RemoteMode::emergency : RemoteMode::fault;
+    latest_status.command.connection_epoch = connection_epoch;
+    latest_status.fault = fault;
+    portEXIT_CRITICAL(&state_lock);
 }
 
 } // namespace ble

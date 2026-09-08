@@ -1,33 +1,39 @@
 #pragma once
 
 #include <cstdint>
-
 #include "esp_err.h"
+#include "remote_protocol.hpp"
 
-namespace vehicle {
-namespace ble {
+namespace vehicle::ble {
 
-/*
- * BLE服务把网页端的“转向,油门”写入转换为控制任务读取的命令快照。
- * NimBLE回调发布原始整数，latestCommand()在控制任务侧完成缩放和一致性读取。
- */
 struct CommandSnapshot {
-    // steering_voltage_v保存缩放后的转向差分电压，单位V。
     float steering_voltage_v;
-    // throttle_velocity_rad_s保存缩放后的目标轮速，单位rad/s。
     float throttle_velocity_rad_s;
-    // sequence在完整非空命令写入时递增，用于识别新命令。
-    std::uint32_t sequence;
-    // connected表示当前是否存在BLE连接。
+    std::uint16_t sequence;
     bool connected;
+    RemoteMode mode;
+    std::int64_t command_age_us;
+    bool legacy;
+    bool sequence_valid;
+    std::uint32_t connection_epoch;
 };
 
-// initialize()启动兼容原网页协议的ESP-IDF NimBLE外设。
+struct StatusSnapshot {
+    CommandSnapshot command{};
+    std::int64_t sampled_us{};
+    std::uint32_t sample_sequence{};
+    float pitch_deg{};
+    float left_velocity_rad_s{};
+    float right_velocity_rad_s{};
+    std::uint8_t fault{};
+    bool sensors_valid{};
+};
+
 esp_err_t initialize();
-
-// latestCommand()返回控制任务可一致读取的最近一份命令快照。
+// 仅由ControlTask调用：消费请求、判断超时并返回本周期有效命令。
 CommandSnapshot latestCommand();
+// 仅复制固定状态，通知由NimBLE主机发送。故障码：1初始化、2传感器、3定时器。
+void publishStatus(const StatusSnapshot &status);
+void publishFault(std::uint8_t fault, bool emergency = false);
 
-
-} // namespace ble
-} // namespace vehicle
+} // namespace vehicle::ble
