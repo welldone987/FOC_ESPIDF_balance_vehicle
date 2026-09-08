@@ -57,3 +57,7 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wno-error=format
     -Wno-format
 )
+
+# 控制输入有效性保护保留IEEE浮点语义。
+set_source_files_properties(Control/balance_controller.cpp FreeRTOS/application_tasks.cpp
+    PROPERTIES COMPILE_OPTIONS "-fno-fast-math")

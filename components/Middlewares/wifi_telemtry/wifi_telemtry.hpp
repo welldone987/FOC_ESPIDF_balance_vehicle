@@ -22,10 +22,10 @@ struct TelemetrySnapshot {
     float left_velocity_rad_s;
     // right_velocity_rad_s保存右轮角速度，单位rad/s。
     float right_velocity_rad_s;
-    // left_target_v保存左电机目标电压，单位V。
-    float left_target_v;
-    // right_target_v保存右电机目标电压，单位V。
-    float right_target_v;
+    // left_target_a保存左电机目标电流，单位A。
+    float left_target_a;
+    // right_target_a保存右电机目标电流，单位A。
+    float right_target_a;
 };
 
 // initialize()初始化Wi-Fi station、事件回调和TCP遥测所需网络资源。

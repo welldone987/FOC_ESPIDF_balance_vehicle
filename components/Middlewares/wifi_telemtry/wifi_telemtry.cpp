@@ -42,7 +42,7 @@ constexpr std::size_t kBufferSize = 256U;
 constexpr char kHeader[] =
     "#balancing_vehicle_tcp,v1\n"
     "#time_s,pitch_deg,left_velocity_rad_s,right_velocity_rad_s,"
-    "velocity_difference_rad_s,left_target_v,right_target_v\n";
+    "velocity_difference_rad_s,left_target_a,right_target_a\n";
 
 StaticEventGroup_t wifi_events_storage{};
 // wifi_events由事件回调设置，由服务任务读取。
@@ -315,8 +315,8 @@ void service(const TelemetrySnapshot *snapshot)
         static_cast<double>(left),
         static_cast<double>(right),
         static_cast<double>(left - right),
-        static_cast<double>(snapshot->left_target_v),
-        static_cast<double>(snapshot->right_target_v));
+        static_cast<double>(snapshot->left_target_a),
+        static_cast<double>(snapshot->right_target_a));
     // 只有整行适合缓冲区时才提交为下一次非阻塞发送帧。
     if (length > 0 && static_cast<std::size_t>(length) < pending.size()) {
         pending_length = static_cast<std::size_t>(length);

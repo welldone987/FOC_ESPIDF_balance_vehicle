@@ -51,3 +51,6 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wno-error=format
     -Wno-format
 )
+
+# 电流目标的NaN/Inf拒绝检查不能被fast-math消除。
+set_source_files_properties(Motor/motor_foc_service.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math")
