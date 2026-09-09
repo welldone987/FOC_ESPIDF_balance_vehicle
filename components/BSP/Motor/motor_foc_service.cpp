@@ -1,187 +1,127 @@
 #include "motor_foc_service.hpp"
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include "board_pins.hpp"
 #include "vehicle_config.hpp"
+#include "current_sense.hpp"
+#include "current_control.hpp"
+#include "svpwm.hpp"
 #include "esp_simplefoc.h"
-#include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_cali_scheme.h"
 #include "esp_timer.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 namespace vehicle::motor {
 namespace {
-// AS5600原接口用-1表示读失败；运行阶段先读取并验证，再供loopFOC消费缓存。
+// 库对齐时检查每次I2C读数；运行时缓存供Sensor::update消费，不重复访问总线。
 class CheckedEncoder final : public AS5600 {
 public:
     using AS5600::AS5600;
     bool cached = false;
     bool healthy = true;
-    float angle = 0.0f;
+    float angle_rad = 0.0f;
     bool refresh()
     {
-        const float value = AS5600::getSensorAngle();
-        healthy = healthy && std::isfinite(value) && value >= 0.0f;
-        if (healthy) { angle = value; }
+        const float value_rad = AS5600::getSensorAngle();
+        healthy = healthy && std::isfinite(value_rad) && value_rad >= 0.0f && value_rad < 6.283186f;
+        if (healthy) { angle_rad = value_rad; }
         return healthy;
     }
     float getSensorAngle() override
     {
         if (!cached) { refresh(); }
-        return angle;
+        return healthy ? angle_rad : -1.0f;
     }
 };
 CheckedEncoder left_sensor{I2C_NUM_0, board::pins::kI2c0Scl, board::pins::kI2c0Sda};
 CheckedEncoder right_sensor{I2C_NUM_1, board::pins::kI2c1Scl, board::pins::kI2c1Sda};
-BLDCMotor left_motor{config::kMotorPolePairs};
-BLDCMotor right_motor{config::kMotorPolePairs};
-BLDCDriver3PWM left_driver{board::pins::kMotor0PwmA, board::pins::kMotor0PwmB,
-    board::pins::kMotor0PwmC, board::pins::kMotor0Enable};
-BLDCDriver3PWM right_driver{board::pins::kMotor1PwmA, board::pins::kMotor1PwmB,
-    board::pins::kMotor1PwmC, board::pins::kMotor1Enable};
-constexpr std::array<gpio_num_t, 4> current_pins{
-    board::pins::kMotor0CurrentSenseOut1, board::pins::kMotor0CurrentSenseOut2,
-    board::pins::kMotor1CurrentSenseOut1, board::pins::kMotor1CurrentSenseOut2};
-adc_oneshot_unit_handle_t adc = nullptr;
-adc_cali_handle_t calibration = nullptr;
-std::array<adc_channel_t, 4> channels{};
-std::array<float, 4> offsets_mv{};
-std::array<PhaseCurrent_s, 2> phase_samples{};
-std::int64_t sample_started_us = 0;
+// 不传enable引脚：GPIO12为双轮公共电源，不能由任一驱动独立切换。
+BLDCDriver3PWM left_driver{board::pins::kMotor0PwmA, board::pins::kMotor0PwmB, board::pins::kMotor0PwmC};
+BLDCDriver3PWM right_driver{board::pins::kMotor1PwmA, board::pins::kMotor1PwmB, board::pins::kMotor1PwmC};
+// 库电机对象仅用于启动对齐；运行路径不调用move/loopFOC及库电流PI。
+BLDCMotor left_alignment{config::kMotorPolePairs};
+BLDCMotor right_alignment{config::kMotorPolePairs};
+struct MotorState {
+    float encoder_direction;
+    float zero_electrical_angle_rad;
+    float previous_angle_rad;
+    float electrical_angle_rad;
+    float velocity_rad_s;
+    float iq_filtered_a;
+    bool current_filter_ready;
+    CurrentPiState pi;
+};
+MotorState left_state{};
+MotorState right_state{};
 bool initialized = false;
 bool stopped = false;
+bool enable_ready = false;
+bool outputs_enabled = false;
 bool left_driver_ready = false;
 bool right_driver_ready = false;
+bool wheel_sample_ready = false;
+std::int64_t encoder_started_us = 0;
+std::int64_t previous_encoder_us = 0;
+std::int64_t previous_current_us = 0;
+constexpr float two_pi = 6.283185307179586f;
 
-// 适配库所需的唯一继承接口；ADC读取在PI之前完成，库只读取本周期有效快照。
-class SampledCurrentSense final : public CurrentSense {
-public:
-    explicit SampledCurrentSense(unsigned index) : index_(index) {}
-    int init() override { initialized = true; return 1; }
-    PhaseCurrent_s getPhaseCurrents() override { return phase_samples[index_]; }
-    int driverAlign(float, bool) override
-    {
-        // 不用缓存值伪装自动相序校准；启用门要求已核验OUT1=A、OUT2=B及极性。
-        return config::kCurrentHardwareVerified ? 1 : 0;
-    }
-private:
-    unsigned index_;
-};
-SampledCurrentSense left_current{0};
-SampledCurrentSense right_current{1};
-
-esp_err_t readMillivolts(std::array<int, 4> &values)
+bool align(BLDCMotor &motor, CheckedEncoder &sensor, BLDCDriver3PWM &driver, MotorState &state)
 {
-    sample_started_us = esp_timer_get_time();
-    for (unsigned i = 0; i < values.size(); ++i) {
-        int raw = 0;
-        esp_err_t result = adc_oneshot_read(adc, channels[i], &raw);
-        if (result != ESP_OK) { return result; }
-        result = adc_cali_raw_to_voltage(calibration, raw, &values[i]);
-        if (result != ESP_OK) { return result; }
-        if (values[i] < config::kCurrentAdcMinMv || values[i] > config::kCurrentAdcMaxMv) {
-            return ESP_ERR_INVALID_RESPONSE;
-        }
-    }
-    return esp_timer_get_time() - sample_started_us <= config::kCurrentSampleMaxAgeUs
-        ? ESP_OK : ESP_ERR_TIMEOUT;
-}
-
-void releaseAdc()
-{
-    if (calibration) { adc_cali_delete_scheme_line_fitting(calibration); calibration = nullptr; }
-    if (adc) { adc_oneshot_del_unit(adc); adc = nullptr; }
-}
-
-esp_err_t initializeAdc()
-{
-    adc_oneshot_unit_init_cfg_t unit{};
-    unit.unit_id = ADC_UNIT_1;
-    esp_err_t result = adc_oneshot_new_unit(&unit, &adc);
-    if (result != ESP_OK) { return result; }
-    adc_oneshot_chan_cfg_t channel{};
-    channel.atten = ADC_ATTEN_DB_12;
-    channel.bitwidth = ADC_BITWIDTH_12;
-    for (unsigned i = 0; i < channels.size(); ++i) {
-        adc_unit_t actual_unit{};
-        result = adc_oneshot_io_to_channel(current_pins[i], &actual_unit, &channels[i]);
-        if (result != ESP_OK || actual_unit != ADC_UNIT_1) { return ESP_ERR_INVALID_ARG; }
-        result = adc_oneshot_config_channel(adc, channels[i], &channel);
-        if (result != ESP_OK) { return result; }
-    }
-    adc_cali_line_fitting_config_t cal{};
-    cal.unit_id = ADC_UNIT_1;
-    cal.atten = ADC_ATTEN_DB_12;
-    cal.bitwidth = ADC_BITWIDTH_12;
-    cal.default_vref = config::kAdcDefaultVrefMv;
-    result = adc_cali_create_scheme_line_fitting(&cal, &calibration);
-    if (result != ESP_OK) { return result; }
-    std::array<int, 4> low{};
-    std::array<int, 4> high{};
-    low.fill(config::kCurrentAdcMaxMv);
-    offsets_mv.fill(0.0f);
-    for (unsigned sample = 0; sample < config::kCurrentOffsetSamples; ++sample) {
-        std::array<int, 4> mv{};
-        result = readMillivolts(mv);
-        if (result != ESP_OK) { return result; }
-        for (unsigned i = 0; i < mv.size(); ++i) {
-            offsets_mv[i] += mv[i];
-            low[i] = std::min(low[i], mv[i]);
-            high[i] = std::max(high[i], mv[i]);
-        }
-        vTaskDelay(1); // 仅启动零偏校准使用，驱动器保持关闭。
-    }
-    for (unsigned i = 0; i < offsets_mv.size(); ++i) {
-        offsets_mv[i] /= config::kCurrentOffsetSamples;
-        if (offsets_mv[i] < config::kCurrentOffsetMinMv ||
-            offsets_mv[i] > config::kCurrentOffsetMaxMv ||
-            high[i] - low[i] > config::kCurrentOffsetNoiseMv) {
-            return ESP_ERR_INVALID_RESPONSE;
-        }
-    }
-    return ESP_OK;
-}
-
-bool sampleCurrents()
-{
-    std::array<int, 4> mv{};
-    if (readMillivolts(mv) != ESP_OK) { return false; }
-    std::array<float, 4> amps{};
-    for (unsigned i = 0; i < amps.size(); ++i) {
-        amps[i] = (mv[i] - offsets_mv[i]) * 0.001f * config::kCurrentPolarity /
-            (config::kCurrentShuntOhm * config::kCurrentAmplifierGain);
-        if (std::abs(amps[i]) > config::kPhaseTripA) { return false; }
-    }
-    for (unsigned i = 0; i < phase_samples.size(); ++i) {
-        const float a = amps[2 * i];
-        const float b = amps[2 * i + 1];
-        if (std::abs(a + b) > config::kPhaseTripA) { return false; }
-        // c=0是SimpleFOC的双采样标记，库按ic=-ia-ib重构第三相。
-        phase_samples[i] = {a, b, 0.0f};
-    }
+    motor.linkSensor(&sensor);
+    motor.linkDriver(&driver);
+    motor.controller = MotionControlType::torque;
+    motor.torque_controller = TorqueControlType::voltage;
+    motor.voltage_limit = config::kUqLimitV;
+    motor.voltage_sensor_align = config::kMotorSensorAlignmentVoltageV;
+    motor.foc_modulation = FOCModulationType::SpaceVectorPWM;
+    if (!motor.init()) { return false; }
+    // 对齐可能转动，沿用库的有界扫描；此阶段没有运行软件电流保护。
+    const bool success = motor.initFOC() && sensor.healthy &&
+        std::isfinite(motor.zero_electric_angle) &&
+        (motor.sensor_direction == Direction::CW || motor.sensor_direction == Direction::CCW);
+    motor.disable();
+    if (!success) { return false; }
+    state.encoder_direction = static_cast<float>(motor.sensor_direction);
+    state.zero_electrical_angle_rad = motor.zero_electric_angle;
+    sensor.cached = true;
     return true;
 }
 
-void configureMotor(BLDCMotor &motor, SampledCurrentSense &sense)
+float updateWheel(CheckedEncoder &sensor, MotorState &state, float forward_sign, float dt_s)
 {
-    motor.controller = MotionControlType::torque;
-    motor.torque_controller = TorqueControlType::foc_current;
-    motor.current_limit = config::kCurrentLimitA;
-    motor.voltage_limit = config::kCurrentAxisVoltageV;
-    motor.voltage_sensor_align = config::kMotorSensorAlignmentVoltageV;
-    motor.linkCurrentSense(&sense);
-    for (PIDController *pi : {&motor.PID_current_d, &motor.PID_current_q}) {
-        pi->P = config::kCurrentKp;
-        pi->I = config::kCurrentKi;
-        pi->D = 0.0f;
-        pi->output_ramp = 0.0f;
-        pi->limit = config::kCurrentAxisVoltageV;
-    }
-    motor.LPF_current_d.Tf = config::kCurrentFilterS;
-    motor.LPF_current_q.Tf = config::kCurrentFilterS;
-    // 不设置R/L/KV或库前馈，避免限幅后的附加电压/电流绕过限制。
+    sensor.update();
+    const float angle_rad = sensor.getMechanicalAngle();
+    // 单圈差分避免累计转数损失精度；每周期都更新，静止时原始速度确实为0。
+    const float delta_rad = std::remainder(angle_rad - state.previous_angle_rad, two_pi);
+    state.previous_angle_rad = angle_rad;
+    const float velocity_rad_s = state.encoder_direction * forward_sign * delta_rad / dt_s;
+    const float alpha = dt_s / (config::kWheelVelocityFilterS + dt_s);
+    state.velocity_rad_s += alpha * (velocity_rad_s - state.velocity_rad_s);
+    state.electrical_angle_rad = std::remainder(state.encoder_direction * config::kMotorPolePairs *
+        angle_rad - state.zero_electrical_angle_rad, two_pi);
+    return state.velocity_rad_s;
+}
+
+MotorSample calculateCurrent(MotorState &state, const current_sense::PhaseCurrents &phase,
+    float requested_a, float forward_sign, float dt_s, PhaseDuty &duty)
+{
+    const float reference_a = std::clamp(requested_a, -config::kCurrentLimitA, config::kCurrentLimitA);
+    const float iq_a = projectQCurrent(phase.a, phase.b, state.electrical_angle_rad);
+    if (!state.current_filter_ready) { state.iq_filtered_a = iq_a; state.current_filter_ready = true; }
+    const float alpha = dt_s / (config::kCurrentFilterS + dt_s);
+    state.iq_filtered_a += alpha * (iq_a - state.iq_filtered_a);
+    const float voltage_limit_v = std::min(config::kUqLimitV,
+        config::kSvpwmLinearMargin * config::kPwmBusReferenceV / 1.7320508075688772f);
+    const auto pi = updateCurrentPi(state.pi, forward_sign * reference_a - state.iq_filtered_a,
+        dt_s, voltage_limit_v);
+    if (pi.valid) { duty = calculateSvpwmDuty(pi.applied_v, state.electrical_angle_rad, config::kPwmBusReferenceV); }
+    // 遥测Iq与Uq转换为车辆前进坐标；相电流仍为桥臂到电机坐标。
+    return {reference_a, forward_sign * state.iq_filtered_a, forward_sign * pi.applied_v,
+        phase.a, phase.b, phase.c, pi.saturated, requested_a != reference_a};
+}
+void writePwm(BLDCDriver3PWM &driver, const PhaseDuty &duty)
+{
+    // setPwm接收V，不是占空比；三相驱动限幅保持母线参考，Uq已在PI处限制。
+    driver.setPwm(duty.a * config::kPwmBusReferenceV, duty.b * config::kPwmBusReferenceV,
+        duty.c * config::kPwmBusReferenceV);
 }
 } // namespace
 
@@ -189,84 +129,114 @@ esp_err_t initialize()
 {
     if (stopped) { return ESP_ERR_INVALID_STATE; }
     if (initialized) { return ESP_OK; }
+    // 先拉低输出锁存，再配置GPIO；即使验证门未通过也建立确定的关闭状态。
+    esp_err_t result = gpio_set_level(board::pins::kMotorCommonEnable, 0);
+    if (result == ESP_OK) { result = gpio_set_direction(board::pins::kMotorCommonEnable, GPIO_MODE_OUTPUT); }
+    if (result != ESP_OK) { return result; }
+    enable_ready = true;
     if (!config::kCurrentHardwareVerified) { return ESP_ERR_INVALID_STATE; }
-    left_driver.voltage_power_supply = config::kMotorSupplyVoltageV;
-    right_driver.voltage_power_supply = config::kMotorSupplyVoltageV;
+    left_driver.voltage_power_supply = right_driver.voltage_power_supply = config::kPwmBusReferenceV;
+    left_driver.voltage_limit = right_driver.voltage_limit = config::kPwmBusReferenceV;
     left_driver_ready = left_driver.init(0) != 0;
     if (!left_driver_ready) { disableOutputs(); return ESP_FAIL; }
     left_driver.disable();
     right_driver_ready = right_driver.init(1) != 0;
     if (!right_driver_ready) { disableOutputs(); return ESP_FAIL; }
     right_driver.disable();
-    const esp_err_t result = initializeAdc();
-    if (result != ESP_OK) { disableOutputs(); releaseAdc(); return result; }
+    result = current_sense::initialize();
+    if (result != ESP_OK) { disableOutputs(); current_sense::release(); return result; }
     left_sensor.init();
     right_sensor.init();
-    left_motor.linkSensor(&left_sensor);
-    right_motor.linkSensor(&right_sensor);
-    left_motor.linkDriver(&left_driver);
-    right_motor.linkDriver(&right_driver);
-    left_current.linkDriver(&left_driver);
-    right_current.linkDriver(&right_driver);
-    left_current.init();
-    right_current.init();
-    configureMotor(left_motor, left_current);
-    configureMotor(right_motor, right_current);
-    if (!right_motor.init() || !left_motor.init() ||
-        !right_motor.initFOC() || !left_motor.initFOC() ||
-        !left_sensor.healthy || !right_sensor.healthy) {
-        disableOutputs();
-        return ESP_FAIL;
+    if (!left_sensor.healthy || !right_sensor.healthy) { disableOutputs(); return ESP_FAIL; }
+    if (gpio_set_level(board::pins::kMotorCommonEnable, 1) != ESP_OK ||
+        !align(right_alignment, right_sensor, right_driver, right_state) ||
+        !align(left_alignment, left_sensor, left_driver, left_state)) {
+        disableOutputs(); return ESP_FAIL;
     }
-    left_sensor.cached = right_sensor.cached = true;
+    pauseOutputs();
+    // 对齐后重新读取两轮，避免把对齐运动算进第一个速度样本。
+    if (!left_sensor.refresh() || !right_sensor.refresh()) { disableOutputs(); return ESP_FAIL; }
+    left_state.previous_angle_rad = left_sensor.angle_rad;
+    right_state.previous_angle_rad = right_sensor.angle_rad;
+    previous_encoder_us = 0;
     initialized = true;
     return ESP_OK;
 }
 
-WheelState runFocAndReadWheelState()
+WheelState readWheelState()
 {
-    if (!initialized || stopped) { return {0, 0, false}; }
-    const auto encoder_started_us = esp_timer_get_time();
-    if (!left_sensor.refresh() || !right_sensor.refresh()) {
-        disableOutputs(); return {0, 0, false};
+    wheel_sample_ready = false;
+    if (!initialized || stopped) { return {}; }
+    encoder_started_us = esp_timer_get_time();
+    const bool first_sample = previous_encoder_us == 0;
+    const float dt_s = first_sample ? config::kControlPeriodUs * 1.0e-6f :
+        (encoder_started_us - previous_encoder_us) * 1.0e-6f;
+    previous_encoder_us = encoder_started_us;
+    if (!(dt_s > 0.0f && dt_s <= config::kMaximumControlGapS) ||
+        !left_sensor.refresh() || !right_sensor.refresh()) { disableOutputs(); return {}; }
+    if (first_sample) {
+        left_state.previous_angle_rad = left_sensor.angle_rad;
+        right_state.previous_angle_rad = right_sensor.angle_rad;
     }
-    if (!sampleCurrents()) { disableOutputs(); return {0, 0, false}; }
-    // 显式消费上一姿态周期的目标，再运行电流PI；避免move放在PI之后多延迟一拍。
-    left_motor.current_sp = left_motor.target;
-    right_motor.current_sp = right_motor.target;
-    if (esp_timer_get_time() - encoder_started_us > config::kCurrentSampleMaxAgeUs) {
-        disableOutputs(); return {0, 0, false};
+    const float left_rad_s = updateWheel(left_sensor, left_state, config::kMotor0ForwardSign, dt_s);
+    const float right_rad_s = updateWheel(right_sensor, right_state, config::kMotor1ForwardSign, dt_s);
+    if (!std::isfinite(left_rad_s) || !std::isfinite(right_rad_s) ||
+        esp_timer_get_time() - encoder_started_us > config::kCurrentSampleMaxAgeUs) {
+        disableOutputs(); return {};
     }
-    left_motor.loopFOC();
-    if (esp_timer_get_time() - encoder_started_us > config::kCurrentSampleMaxAgeUs) {
-        disableOutputs(); return {0, 0, false};
-    }
-    right_motor.loopFOC();
-    left_motor.move();
-    right_motor.move();
-    const bool valid = std::isfinite(left_motor.shaft_velocity) &&
-        std::isfinite(right_motor.shaft_velocity) &&
-        esp_timer_get_time() - encoder_started_us <= config::kCurrentSampleMaxAgeUs;
-    if (!valid) { disableOutputs(); }
-    return {left_motor.shaft_velocity, right_motor.shaft_velocity, valid};
+    wheel_sample_ready = true;
+    return {left_rad_s, right_rad_s, true};
 }
-void stageTarget(const CurrentCommand &command)
+
+CurrentFeedback runCurrentControl(const CurrentCommand &command)
 {
-    if (!initialized || stopped) { return; }
+    if (!initialized || stopped || !wheel_sample_ready) { disableOutputs(); return {}; }
+    wheel_sample_ready = false;
     if (!std::isfinite(command.left_target_a) || !std::isfinite(command.right_target_a)) {
-        disableOutputs(); return;
+        disableOutputs(); return {};
     }
-    left_motor.target = std::clamp(command.left_target_a, -config::kCurrentLimitA, config::kCurrentLimitA);
-    right_motor.target = std::clamp(command.right_target_a, -config::kCurrentLimitA, config::kCurrentLimitA);
+    const auto sample = current_sense::read();
+    const float dt_s = previous_current_us == 0 ? config::kControlPeriodUs * 1.0e-6f :
+        (sample.started_us - previous_current_us) * 1.0e-6f;
+    previous_current_us = sample.started_us;
+    if (!sample.valid || !(dt_s > 0.0f && dt_s <= config::kMaximumControlGapS)) { disableOutputs(); return {}; }
+    PhaseDuty left_duty{}, right_duty{};
+    const auto left = calculateCurrent(left_state, sample.phases_a[0], command.left_target_a,
+        config::kMotor0ForwardSign, dt_s, left_duty);
+    const auto right = calculateCurrent(right_state, sample.phases_a[1], command.right_target_a,
+        config::kMotor1ForwardSign, dt_s, right_duty);
+    if (!left_duty.valid || !right_duty.valid ||
+        esp_timer_get_time() - encoder_started_us > config::kCurrentSampleMaxAgeUs) {
+        disableOutputs(); return {};
+    }
+    writePwm(left_driver, left_duty);
+    writePwm(right_driver, right_duty);
+    if (esp_timer_get_time() - encoder_started_us > config::kCurrentSampleMaxAgeUs) { disableOutputs(); return {}; }
+    if (!outputs_enabled) {
+        if (gpio_set_level(board::pins::kMotorCommonEnable, 1) != ESP_OK) { disableOutputs(); return {}; }
+        outputs_enabled = true;
+    }
+    return {left, right, dt_s, esp_timer_get_time() - sample.started_us, true};
+}
+void pauseOutputs()
+{
+    // IMU初始化失败时也可能先走停机路径，因此不能依赖电机初始化已完成。
+    gpio_set_level(board::pins::kMotorCommonEnable, 0);
+    if (!enable_ready) {
+        enable_ready = gpio_set_direction(board::pins::kMotorCommonEnable, GPIO_MODE_OUTPUT) == ESP_OK;
+    }
+    if (left_driver_ready) { left_driver.disable(); }
+    if (right_driver_ready) { right_driver.disable(); }
+    outputs_enabled = false;
+    left_state.pi = right_state.pi = {};
+    left_state.iq_filtered_a = right_state.iq_filtered_a = 0.0f;
+    left_state.current_filter_ready = right_state.current_filter_ready = false;
+    previous_current_us = 0;
+    wheel_sample_ready = false;
 }
 void disableOutputs()
 {
     stopped = true;
-    left_motor.target = right_motor.target = 0.0f;
-    left_motor.current_sp = right_motor.current_sp = 0.0f;
-    left_motor.enabled = 0;
-    if (left_driver_ready) { left_driver.disable(); }
-    right_motor.enabled = 0;
-    if (right_driver_ready) { right_driver.disable(); }
+    pauseOutputs();
 }
 } // namespace vehicle::motor

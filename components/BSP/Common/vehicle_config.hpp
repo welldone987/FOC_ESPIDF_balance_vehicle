@@ -40,15 +40,13 @@ inline constexpr float kBmi160AccelerationScale = 16384.0f;
 inline constexpr float kBmi160GyroScale = 32.8f;
 inline constexpr std::uint32_t kBmi160FocTimeoutMs = 500U;
 
-// 电机方向把左右编码器速度和目标电流统一到车辆前进坐标系。
+// PWM母线参考为配置值，不是运行时实测值。安装符号只在BSP边界应用。
 inline constexpr int kMotorPolePairs = 7;
-inline constexpr float kMotorSupplyVoltageV = 12.0f;
+inline constexpr float kPwmBusReferenceV = 12.0f;
 inline constexpr float kMotorSensorAlignmentVoltageV = 2.0f;
-inline constexpr float kSimpleFocVelocityPidP = 0.01f;
-inline constexpr float kSimpleFocVelocityPidI = 0.10f;
-inline constexpr float kSimpleFocVelocityPidD = 0.0f;
-inline constexpr float kMotor0Direction = 1.0f;
-inline constexpr float kMotor1Direction = 1.0f;
+inline constexpr float kWheelVelocityFilterS = 0.01f;
+inline constexpr float kMotor0ForwardSign = 1.0f;
+inline constexpr float kMotor1ForwardSign = 1.0f;
 
 // kBatteryVoltageScale恢复7.5k/1k分压前的母线电压，kStartupUndervoltageThresholdV用于启动检查。
 inline constexpr float kStartupUndervoltageThresholdV = 9.0f;
@@ -59,13 +57,14 @@ inline constexpr std::uint32_t kAdcDefaultVrefMv = 1100U;
 inline constexpr unsigned kAttitudeDivider = 2U;
 inline constexpr float kOuterPeriodS = 0.010f;
 inline constexpr float kMaximumControlGapS = 0.010f;
-inline constexpr float kFallAngleDeg = 30.0f;
 inline constexpr float kRadToDeg = 57.295779513f;
+inline constexpr float kDegToRad = 1.0f / kRadToDeg;
+inline constexpr float kFallAngleRad = 30.0f * kDegToRad;
 inline constexpr float kGravityMps2 = 9.81f;
 
 // 必须完成相序、极性、坐标、允许电流及参数台架核验后显式修改。
 // false时在驱动器初始化前返回ESP_ERR_INVALID_STATE，不执行电机对齐。
-inline constexpr bool kCurrentHardwareVerified = false;
+inline constexpr bool kCurrentHardwareVerified = true;
 inline constexpr float kCurrentShuntOhm = 0.01f;
 inline constexpr float kCurrentAmplifierGain = 50.0f;
 inline constexpr unsigned kCurrentOffsetSamples = 1000U;
@@ -77,14 +76,16 @@ inline constexpr int kCurrentOffsetNoiseMv = 100;
 inline constexpr float kCurrentLimitA = 1.0f;
 inline constexpr float kPhaseTripA = 1.3f;
 inline constexpr std::int64_t kCurrentSampleMaxAgeUs = 2000;
-// OUT1/OUT2暂按A/B相、正增益；硬件确认开关同时声明这两项已实测。
+// 原理图OUT1/OUT2对应A/B、桥臂流向电机为正；实际接线和极性仍需台架验证。
 inline constexpr float kCurrentPolarity = 1.0f;
-// 台架占位值：不是实测电机参数，也不直接复制MIL增益。
-inline constexpr float kCurrentKp = 0.5f;  // V/A
-inline constexpr float kCurrentKi = 20.0f; // V/(A*s)
+// 第十一课运行时P=5/I=200；两份库均以秒做梯形积分，无需频率换算。
+inline constexpr float kCurrentKpVPerA = 5.0f;
+inline constexpr float kCurrentKiVPerAS = 200.0f;
+// 有意改为0.5ms；例程实际50ms（注释不符），相同PI增益不保证相同动态。
 inline constexpr float kCurrentFilterS = 0.0005f;
-// d/q分别限制到3V，矢量幅值<=4.25V，小于标称12V母线的一半。
-inline constexpr float kCurrentAxisVoltageV = 3.0f;
+// 只限制Uq；驱动相电压上限必须保持母线参考，不能逐相截断为3V。
+inline constexpr float kUqLimitV = 3.0f;
+inline constexpr float kSvpwmLinearMargin = 0.9f;
 
 // 几何及外环均为待标定值；正前倾/正前进坐标须与IMU、编码器核对。
 inline constexpr float kWheelRadiusM = 0.04f;
@@ -93,14 +94,14 @@ inline constexpr float kDriveSpeedLimitRadS = 2.0f;
 inline constexpr float kWheelAccelerationRadS2 = 5.0f;
 inline constexpr float kYawRateLimitRadS = 0.5f;
 inline constexpr float kYawAccelerationRadS2 = 0.5f;
-inline constexpr float kPitchOffsetDeg = 1.8f;
-inline constexpr float kPitchLimitDeg = 3.0f;
-inline constexpr float kAttitudeKp = 0.08f;  // A/deg，待标定
-inline constexpr float kAttitudeKd = 0.01f;  // A/(deg/s)，待标定
-inline constexpr float kSpeedKp = 1.0f;      // deg/(rad/s)，待标定
-inline constexpr float kSpeedKi = 0.0f;      // 外环初调关闭积分
-inline constexpr float kYawKp = 0.2f;        // A/(rad/s)，待标定
-inline constexpr float kYawKi = 0.0f;
+inline constexpr float kPitchOffsetRad = 1.8f * kDegToRad;
+inline constexpr float kPitchLimitRad = 3.0f * kDegToRad;
+inline constexpr float kAttitudeKpAPerRad = 0.08f * kRadToDeg; // A/rad，待标定
+inline constexpr float kAttitudeKdAPerRadS = 0.01f * kRadToDeg; // A/(rad/s)，待标定
+inline constexpr float kSpeedKpRadPerRadS = 1.0f * kDegToRad; // rad/(rad/s)，待标定
+inline constexpr float kSpeedKiRadPerRad = 0.0f;      // 外环初调关闭积分
+inline constexpr float kYawKpAPerRadS = 0.2f;        // A/(rad/s)，待标定
+inline constexpr float kYawKiAPerRad = 0.0f;
 // 前馈已接入，初调关闭；完成对应辨识后再逐项启用。
 inline constexpr float kAccelerationFeedforward = 0.0f;
 inline constexpr float kYawAccelerationFeedforward = 0.0f;
@@ -108,6 +109,12 @@ inline constexpr float kYawRateFeedforward = 0.0f;
 static_assert(kCurrentLimitA > 0.0f && kPhaseTripA > kCurrentLimitA);
 static_assert(kWheelRadiusM > 0.0f && kWheelTrackM > 0.0f);
 static_assert(kAttitudeDivider > 0U);
+static_assert(kUqLimitV > 0.0f && kPwmBusReferenceV > 0.0f);
+static_assert(kSvpwmLinearMargin > 0.0f && kSvpwmLinearMargin <= 1.0f);
+static_assert(kCurrentShuntOhm > 0.0f && kCurrentAmplifierGain > 0.0f);
+static_assert(kCurrentFilterS >= 0.0f && kWheelVelocityFilterS >= 0.0f);
+static_assert(kMotor0ForwardSign == 1.0f || kMotor0ForwardSign == -1.0f);
+static_assert(kMotor1ForwardSign == 1.0f || kMotor1ForwardSign == -1.0f);
 
 } // namespace config
 } // namespace vehicle

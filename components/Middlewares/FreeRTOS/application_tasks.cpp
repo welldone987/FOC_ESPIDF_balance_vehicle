@@ -81,63 +81,85 @@ void controlTask(void *argument)
     }
 
     std::uint32_t sequence = 0U;
-    unsigned attitude_divider = 0;
     bool was_driving = false;
+    bool current_saturated = false;
     std::int64_t previous_cycle_us = esp_timer_get_time();
     std::int64_t previous_attitude_us = previous_cycle_us;
+    std::int64_t next_attitude_us = previous_cycle_us;
     imu::AttitudeSample attitude{};
     control::ControlOutput output{};
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         const std::int64_t cycle_time_us = esp_timer_get_time();
-        const float cycle_dt = (cycle_time_us - previous_cycle_us) * 1.0e-6f;
+        const float cycle_dt_s = (cycle_time_us - previous_cycle_us) * 1.0e-6f;
         previous_cycle_us = cycle_time_us;
-        if (!(cycle_dt > 0.0f && cycle_dt <= config::kMaximumControlGapS)) { stopControl(3U); }
+        if (!(cycle_dt_s > 0.0f && cycle_dt_s <= config::kMaximumControlGapS)) { stopControl(3U); }
         const ble::CommandSnapshot command = ble::latestCommand();
         if (command.mode == ble::RemoteMode::emergency) { stopControl(0U, true); }
-        if (was_driving && command.mode != ble::RemoteMode::active) {
-            // 停止事件在电流环之前撤销旧驾驶目标，不等待下一次外环更新。
+        const bool driving = command.mode == ble::RemoteMode::active;
+        const bool starting = driving && !was_driving;
+        if (!driving || starting) {
             control::initialize(controller);
-            motor::stageTarget({0.0f, 0.0f});
             output = {};
+            current_saturated = false;
         }
-        was_driving = command.mode == ble::RemoteMode::active;
-        const motor::WheelState wheels = motor::runFocAndReadWheelState();
+        if (!driving) { motor::pauseOutputs(); }
+        was_driving = driving;
+        // 无PWM写入的编码器采样；电流采样放到IMU/外环之后以缩短电流年龄。
+        const motor::WheelState wheels = motor::readWheelState();
         if (!wheels.valid) { stopControl(2U); }
-        if (++attitude_divider < config::kAttitudeDivider) { continue; }
-        attitude_divider = 0;
-        attitude = imu::readAttitude();
-        const std::int64_t attitude_time_us = esp_timer_get_time();
-        const float dt = (attitude_time_us - previous_attitude_us) * 1.0e-6f;
-        previous_attitude_us = attitude_time_us;
-        if (!attitude.valid || !std::isfinite(attitude.pitch_deg) ||
-            !std::isfinite(attitude.pitch_rate_deg_s) ||
-            std::abs(attitude.pitch_deg - config::kPitchOffsetDeg) > config::kFallAngleDeg) {
-            stopControl(2U);
+        control::observeCurrentSaturation(controller, current_saturated);
+        const bool attitude_due = !attitude.valid || starting ||
+            cycle_time_us >= next_attitude_us;
+        if (attitude_due) {
+            attitude = imu::readAttitude();
+            const float attitude_dt_s = (cycle_time_us - previous_attitude_us) * 1.0e-6f;
+            previous_attitude_us = cycle_time_us;
+            constexpr auto attitude_period_us = static_cast<std::int64_t>(
+                config::kControlPeriodUs * config::kAttitudeDivider);
+            // 绝对截止点避免接近2ms的抖动使姿态更新退化为每3周期；跳过旧释放点。
+            if (cycle_time_us >= next_attitude_us) {
+                next_attitude_us += ((cycle_time_us - next_attitude_us) / attitude_period_us + 1) * attitude_period_us;
+            }
+            const float pitch_rad = attitude.pitch_deg * config::kDegToRad;
+            const float pitch_rate_rad_s = attitude.pitch_rate_deg_s * config::kDegToRad;
+            if (!attitude.valid || !std::isfinite(pitch_rad) || !std::isfinite(pitch_rate_rad_s)) { stopControl(2U); }
+            if (driving && std::abs(pitch_rad - config::kPitchOffsetRad) > config::kFallAngleRad) { stopControl(2U); }
+            if (!(attitude_dt_s > 0.0f && attitude_dt_s <= config::kMaximumControlGapS)) { stopControl(3U); }
+            // BLE旧转向刻度仅在边界解释；正旧转向=左轮更快，故映射到负偏航。
+            const float yaw_command_rad_s = -std::clamp(
+                command.steering_voltage_v / config::kRemoteSteeringVoltageV, -1.0f, 1.0f) *
+                config::kYawRateLimitRadS;
+            output = control::update(controller, {
+                wheels.left_velocity_rad_s, wheels.right_velocity_rad_s,
+                pitch_rad, pitch_rate_rad_s, command.throttle_velocity_rad_s,
+                yaw_command_rad_s, driving}, attitude_dt_s);
+            if (!output.valid) { stopControl(2U); }
         }
-        if (!(dt > 0.0f && dt <= config::kMaximumControlGapS)) { stopControl(3U); }
-        // 保留BLE线上电压刻度，仅此处将其解释为归一化转向命令。
-        // 旧命令正转向为左轮更快，转换到右轮更快为正的偏航坐标需负号。
-        const float yaw_command = -std::clamp(
-            command.steering_voltage_v / config::kRemoteSteeringVoltageV, -1.0f, 1.0f) *
-            config::kYawRateLimitRadS;
-        output = control::update(controller, {
-            config::kMotor0Direction * wheels.left_velocity_rad_s,
-            config::kMotor1Direction * wheels.right_velocity_rad_s,
-            attitude.pitch_deg, attitude.pitch_rate_deg_s,
-            command.throttle_velocity_rad_s, yaw_command,
-            command.mode == ble::RemoteMode::active}, dt);
-        motor::stageTarget({output.left_target_a, output.right_target_a});
+        motor::CurrentFeedback current{};
+        if (driving) {
+            current = motor::runCurrentControl({output.left_target_a, output.right_target_a});
+            if (!current.valid) { stopControl(2U); }
+        }
+        current_saturated = current.left.voltage_saturated || current.right.voltage_saturated ||
+            current.left.reference_limited || current.right.reference_limited;
+        if (esp_timer_get_time() - cycle_time_us > static_cast<std::int64_t>(config::kMaximumControlGapS * 1.0e6f)) {
+            stopControl(3U);
+        }
         ++sequence;
         ble::publishStatus(ble::StatusSnapshot{
             command, cycle_time_us, sequence, attitude.pitch_deg,
-            config::kMotor0Direction * wheels.left_velocity_rad_s,
-            config::kMotor1Direction * wheels.right_velocity_rad_s, 0U, true,
+            wheels.left_velocity_rad_s, wheels.right_velocity_rad_s, 0U, true,
         });
         const wifi_telemtry::TelemetrySnapshot snapshot{
             cycle_time_us, sequence, attitude.pitch_deg,
             wheels.left_velocity_rad_s, wheels.right_velocity_rad_s,
-            output.left_target_a, output.right_target_a,
+            current.left.iq_reference_a, current.right.iq_reference_a,
+            current.left.iq_measured_a, current.right.iq_measured_a,
+            current.left.uq_applied_v, current.right.uq_applied_v,
+            current.left.phase_a_a, current.left.phase_b_a, current.left.phase_c_a,
+            current.right.phase_a_a, current.right.phase_b_a, current.right.phase_c_a,
+            current.dt_s, current.sample_age_us, current_saturated, current.valid,
         };
         xQueueOverwrite(context.telemetry_queue, &snapshot);
     }

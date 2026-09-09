@@ -38,11 +38,14 @@ constexpr char kTag[] = "wifi_telemetry";
 // 重连、发送阻塞和文本缓冲区参数的单位分别为ms、ms和字节。
 constexpr std::uint32_t kReconnectPeriodMs = 1000U;
 constexpr std::uint32_t kClientTimeoutMs = 1000U;
-constexpr std::size_t kBufferSize = 256U;
+constexpr std::size_t kBufferSize = 768U;
 constexpr char kHeader[] =
-    "#balancing_vehicle_tcp,v1\n"
+    "#balancing_vehicle_tcp,v2\n"
     "#time_s,pitch_deg,left_velocity_rad_s,right_velocity_rad_s,"
-    "velocity_difference_rad_s,left_target_a,right_target_a\n";
+    "velocity_difference_rad_s,left_target_a,right_target_a,"
+    "left_iq_measured_a,right_iq_measured_a,left_uq_applied_v,right_uq_applied_v,"
+    "left_phase_a_a,left_phase_b_a,left_phase_c_a,right_phase_a_a,right_phase_b_a,right_phase_c_a,"
+    "current_dt_s,current_sample_age_us,current_saturated,current_valid\n";
 
 StaticEventGroup_t wifi_events_storage{};
 // wifi_events由事件回调设置，由服务任务读取。
@@ -302,13 +305,13 @@ void service(const TelemetrySnapshot *snapshot)
     }
 
     // 遥测速度沿用控制器的左右方向约定，velocity_difference为左减右。
-    const float left = config::kMotor0Direction * snapshot->left_velocity_rad_s;
-    const float right = config::kMotor1Direction * snapshot->right_velocity_rad_s;
+    const float left = snapshot->left_velocity_rad_s;
+    const float right = snapshot->right_velocity_rad_s;
     // device_time_us拆成秒和微秒字段，保持LF分隔的文本协议格式。
     const int length = std::snprintf(
         pending.data(),
         pending.size(),
-        "%lld.%06lld,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
+        "%lld.%06lld,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%lld,%u,%u\n",
         static_cast<long long>(snapshot->device_time_us / 1000000LL),
         static_cast<long long>(snapshot->device_time_us % 1000000LL),
         static_cast<double>(snapshot->pitch_deg),
@@ -316,7 +319,14 @@ void service(const TelemetrySnapshot *snapshot)
         static_cast<double>(right),
         static_cast<double>(left - right),
         static_cast<double>(snapshot->left_target_a),
-        static_cast<double>(snapshot->right_target_a));
+        static_cast<double>(snapshot->right_target_a),
+        static_cast<double>(snapshot->left_iq_measured_a), static_cast<double>(snapshot->right_iq_measured_a),
+        static_cast<double>(snapshot->left_uq_applied_v), static_cast<double>(snapshot->right_uq_applied_v),
+        static_cast<double>(snapshot->left_phase_a_a), static_cast<double>(snapshot->left_phase_b_a),
+        static_cast<double>(snapshot->left_phase_c_a), static_cast<double>(snapshot->right_phase_a_a),
+        static_cast<double>(snapshot->right_phase_b_a), static_cast<double>(snapshot->right_phase_c_a),
+        static_cast<double>(snapshot->current_dt_s), static_cast<long long>(snapshot->current_sample_age_us),
+        static_cast<unsigned>(snapshot->current_saturated), static_cast<unsigned>(snapshot->current_valid));
     // 只有整行适合缓冲区时才提交为下一次非阻塞发送帧。
     if (length > 0 && static_cast<std::size_t>(length) < pending.size()) {
         pending_length = static_cast<std::size_t>(length);

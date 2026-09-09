@@ -26,6 +26,20 @@ struct TelemetrySnapshot {
     float left_target_a;
     // right_target_a保存右电机目标电流，单位A。
     float right_target_a;
+    float left_iq_measured_a;
+    float right_iq_measured_a;
+    float left_uq_applied_v;
+    float right_uq_applied_v;
+    float left_phase_a_a;
+    float left_phase_b_a;
+    float left_phase_c_a;
+    float right_phase_a_a;
+    float right_phase_b_a;
+    float right_phase_c_a;
+    float current_dt_s;
+    std::int64_t current_sample_age_us;
+    bool current_saturated;
+    bool current_valid; // 停机时false，零值不代表有效测量。
 };
 
 // initialize()初始化Wi-Fi station、事件回调和TCP遥测所需网络资源。
