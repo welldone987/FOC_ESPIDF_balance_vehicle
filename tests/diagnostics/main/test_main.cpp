@@ -2,21 +2,34 @@
 #include "diagnostic_store.hpp"
 #include "motion_command.hpp"
 #include "balance_controller.hpp"
+#include "control_config.hpp"
 #include "remote_protocol_checks.cpp"
-#include "../../../components/BSP/Motor/current_sense.cpp"
+#include "../../../components/BSP/CurrentSensor/current_sense.cpp"
+#include "../../../components/BSP/Encoder/checked_encoder.cpp"
 #include "../../../components/BSP/Motor/motor_foc_service.cpp"
 #include "../../../components/BSP/IMU/bmi160_attitude.cpp"
-using namespace vehicle;
-namespace cs=vehicle::motor::current_sense;
+namespace cs=vehicle::current_sensor;
+namespace config=vehicle::control::config;
+namespace control=vehicle::control;
+namespace diagnostics=vehicle::diagnostics;
+namespace imu=vehicle::imu;
+namespace motor=vehicle::motor;
+using vehicle::ErrorInfo;
+using vehicle::ErrorPoint;
+using vehicle::control::ControlStage;
+using vehicle::control::ControlTiming;
+using vehicle::control::sampleInterval;
+using vehicle::motor::CurrentStage;
+using vehicle::motor::CurrentTiming;
 void resetMotor()
 {
     fake::reset();
-    motor::initialized=false; motor::stopped=false; motor::enable_ready=false;
-    motor::outputs_enabled=false; motor::left_driver_ready=false; motor::right_driver_ready=false;
-    motor::wheel_sample_ready=false; motor::previous_current_us=0; motor::previous_encoder_us=0;
-    motor::left_state={};motor::right_state={};
-    motor::left_sensor.healthy=true;motor::right_sensor.healthy=true;
-    motor::left_sensor.cached=false;motor::right_sensor.cached=false;
+    vehicle::motor::initialized=false; vehicle::motor::stopped=false; vehicle::motor::enable_ready=false;
+    vehicle::motor::outputs_enabled=false; vehicle::motor::left_driver_ready=false; vehicle::motor::right_driver_ready=false;
+    vehicle::motor::wheel_sample_ready=false; vehicle::motor::previous_current_us=0; vehicle::motor::previous_encoder_us=0;
+    vehicle::motor::left_state={};vehicle::motor::right_state={};
+    vehicle::motor::left_sensor=vehicle::encoder::CheckedEncoder{I2C_NUM_0,board::pins::kI2c0Scl,board::pins::kI2c0Sda};
+    vehicle::motor::right_sensor=vehicle::encoder::CheckedEncoder{I2C_NUM_1,board::pins::kI2c1Scl,board::pins::kI2c1Sda};
 }
 void errorsAndRing()
 {
@@ -275,7 +288,7 @@ void attitudeFilterUsesActualInterval()
 void outerLoopAtTwoHundredHzAttitude()
 {
     control::ControllerState state{};
-    const float dt=config::kControlPeriodUs*config::kAttitudeDivider*1.0e-6f;
+    const float dt=motor::config::kControlPeriodUs*config::kAttitudeDivider*1.0e-6f;
     TEST_ASSERT_FLOAT_WITHIN(0.000001f,0.005f,dt);
     const control::ControlInput input{1,1,config::kPitchOffsetRad,0,0,0,true,false};
     TEST_ASSERT_TRUE(control::update(state,input,dt).valid);

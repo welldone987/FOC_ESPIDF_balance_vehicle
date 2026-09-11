@@ -1,14 +1,22 @@
 #pragma once
 #include <cstdint>
 #include "error_info.hpp"
-#include "control_timing.hpp"
-namespace vehicle::motor {
+#include "motor_timing.hpp"
+
+namespace vehicle {
+namespace motor {
+
+/*
+ * 电机服务组合编码器角度、电流采样、Iq PI和SVPWM输出。
+ * readWheelState()建立本周期角度现场，runCurrentControl()随后完成唯一正常PWM写入。
+ */
 struct WheelState {
     float left_velocity_rad_s;
     float right_velocity_rad_s;
     bool valid;
 };
-struct CurrentCommand { float left_target_a; float right_target_a; }; // 车辆前进坐标，A
+// CurrentCommand保存车辆前进坐标下的左右目标电流，单位A。
+struct CurrentCommand { float left_target_a; float right_target_a; };
 struct MotorSample {
     float iq_reference_a;
     float iq_measured_a;
@@ -37,4 +45,5 @@ esp_err_t runCurrentControl(const CurrentCommand &command, CurrentFeedback *out,
 esp_err_t inhibitOutputs(ErrorInfo *error=nullptr);
 esp_err_t pauseOutputs(ErrorInfo *error=nullptr);
 esp_err_t disableOutputs(ErrorInfo *error=nullptr);
-} // namespace vehicle::motor
+} // namespace motor
+} // namespace vehicle

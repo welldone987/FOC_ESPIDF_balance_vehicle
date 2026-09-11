@@ -2,7 +2,8 @@
 #include <algorithm>
 #include <cmath>
 
-namespace vehicle::motor {
+namespace vehicle {
+namespace motor {
 PhaseDuty calculateSvpwmDuty(float uq_v, float electrical_angle_rad, float bus_reference_v)
 {
     constexpr float pi = 3.14159265358979323846f;
@@ -42,4 +43,5 @@ PhaseDuty calculateSvpwmDuty(float uq_v, float electrical_angle_rad, float bus_r
     duty.c = std::clamp(duty.c, 0.0f, 1.0f);
     return duty;
 }
-} // namespace vehicle::motor
+} // namespace motor
+} // namespace vehicle

@@ -1,9 +1,10 @@
 #include "current_control.hpp"
-#include "vehicle_config.hpp"
+#include "motor_config.hpp"
 #include <algorithm>
 #include <cmath>
 
-namespace vehicle::motor {
+namespace vehicle {
+namespace motor {
 float projectQCurrent(float phase_a_a, float phase_b_a, float electrical_angle_rad)
 {
     const float beta_a = (phase_a_a + 2.0f * phase_b_a) * 0.5773502691896258f;
@@ -34,4 +35,5 @@ CurrentPiOutput updateCurrentPi(CurrentPiState &state, float error_a, float dt_s
     return {requested_v, std::clamp(requested_v, -voltage_limit_v, voltage_limit_v),
             std::abs(candidate_output_v) >= voltage_limit_v, true};
 }
-} // namespace vehicle::motor
+} // namespace motor
+} // namespace vehicle

@@ -3,7 +3,7 @@
 #include "wifi_telemtry.hpp"
 
 #include "sdkconfig.h"
-#include "vehicle_config.hpp"
+#include "wifi_telemtry_config.hpp"
 
 #include <array>
 #include <cerrno>
@@ -220,7 +220,7 @@ void service(const TelemetrySnapshot *snapshot)
     }
 
     reconnect_pending = false;
-    if (!config::kWifiTcpDebugEnabled) {
+    if (!config::kTcpDebugEnabled) {
         closeSockets();
         return;
     }

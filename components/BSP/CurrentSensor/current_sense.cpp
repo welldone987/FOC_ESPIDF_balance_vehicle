@@ -2,14 +2,15 @@
 #include <algorithm>
 #include <cmath>
 #include "board_pins.hpp"
-#include "vehicle_config.hpp"
+#include "current_sensor_config.hpp"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-namespace vehicle::motor::current_sense {
+namespace vehicle {
+namespace current_sensor {
 namespace {
 constexpr std::array<gpio_num_t, 4> current_pins{
     board::pins::kMotor0CurrentSenseOut1, board::pins::kMotor0CurrentSenseOut2,
@@ -30,12 +31,12 @@ esp_err_t readMillivolts(std::array<int, 4> &values, ErrorInfo *error)
         if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_raw, esp, result, raw, 0, i, 5); }
         result = adc_cali_raw_to_voltage(calibration, raw, &values[i]);
         if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_mv, esp, result, raw, 0, i, 5); }
-        if (values[i] < config::kCurrentAdcMinMv || values[i] > config::kCurrentAdcMaxMv) {
-            return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, current_range, application, 0, values[i], values[i] < config::kCurrentAdcMinMv ? config::kCurrentAdcMinMv : config::kCurrentAdcMaxMv, i, 7);
+        if (values[i] < config::kAdcMinMv || values[i] > config::kAdcMaxMv) {
+            return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, current_range, application, 0, values[i], values[i] < config::kAdcMinMv ? config::kAdcMinMv : config::kAdcMaxMv, i, 7);
         }
     }
-    return esp_timer_get_time() - sample_started_us <= config::kCurrentReadMaxDurationUs
-        ? ESP_OK : VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_timeout, application, 0, esp_timer_get_time()-sample_started_us, config::kCurrentReadMaxDurationUs, -1, 3, 1);
+    return esp_timer_get_time() - sample_started_us <= config::kReadMaxDurationUs
+        ? ESP_OK : VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_timeout, application, 0, esp_timer_get_time()-sample_started_us, config::kReadMaxDurationUs, -1, 3, 1);
 }
 
 } // namespace
@@ -73,9 +74,9 @@ esp_err_t initialize(ErrorInfo *error)
     if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_calibration, esp, result); }
     std::array<int, 4> low{};
     std::array<int, 4> high{};
-    low.fill(config::kCurrentAdcMaxMv);
+    low.fill(config::kAdcMaxMv);
     offsets_mv.fill(0.0f);
-    for (unsigned sample = 0; sample < config::kCurrentOffsetSamples; ++sample) {
+    for (unsigned sample = 0; sample < config::kOffsetSamples; ++sample) {
         std::array<int, 4> mv{};
         result = readMillivolts(mv, error);
         if (result != ESP_OK) { return result; }
@@ -87,14 +88,14 @@ esp_err_t initialize(ErrorInfo *error)
         vTaskDelay(1); // 仅启动零偏校准使用，驱动器保持关闭。
     }
     for (unsigned i = 0; i < offsets_mv.size(); ++i) {
-        offsets_mv[i] /= config::kCurrentOffsetSamples;
-        if (offsets_mv[i] < config::kCurrentOffsetMinMv ||
-            offsets_mv[i] > config::kCurrentOffsetMaxMv) {
-            return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, offset_mean, application, 0, offsets_mv[i], offsets_mv[i] < config::kCurrentOffsetMinMv ? config::kCurrentOffsetMinMv : config::kCurrentOffsetMaxMv, i, 7);
+        offsets_mv[i] /= config::kOffsetSamples;
+        if (offsets_mv[i] < config::kOffsetMinMv ||
+            offsets_mv[i] > config::kOffsetMaxMv) {
+            return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, offset_mean, application, 0, offsets_mv[i], offsets_mv[i] < config::kOffsetMinMv ? config::kOffsetMinMv : config::kOffsetMaxMv, i, 7);
         }
     }
     for (unsigned i=0; i<offsets_mv.size(); ++i) {
-        if (high[i]-low[i] > config::kCurrentOffsetNoiseMv) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, offset_noise, application, 0, high[i]-low[i], config::kCurrentOffsetNoiseMv, i, 7, 1); }
+        if (high[i]-low[i] > config::kOffsetNoiseMv) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, offset_noise, application, 0, high[i]-low[i], config::kOffsetNoiseMv, i, 7, 1); }
     }
     ready=true;
     return ESP_OK;
@@ -111,8 +112,8 @@ esp_err_t read(Sample *out, ErrorInfo *error)
     std::array<float, 4> amps{};
     std::array<PhaseCurrents,2> phase_samples{};
     for (unsigned i = 0; i < amps.size(); ++i) {
-        amps[i] = (mv[i] - offsets_mv[i]) * 0.001f * config::kCurrentPolarity /
-            (config::kCurrentShuntOhm * config::kCurrentAmplifierGain);
+        amps[i] = (mv[i] - offsets_mv[i]) * 0.001f * config::kPolarity /
+            (config::kShuntOhm * config::kAmplifierGain);
         if (!std::isfinite(amps[i]) || std::abs(amps[i]) > config::kPhaseTripA) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, phase_limit, application, 0, amps[i], config::kPhaseTripA, i, 7, 1); }
     }
     for (unsigned i = 0; i < phase_samples.size(); ++i) {
@@ -126,4 +127,5 @@ esp_err_t read(Sample *out, ErrorInfo *error)
     return ESP_OK;
 }
 
-} // namespace vehicle::motor::current_sense
+} // namespace current_sensor
+} // namespace vehicle

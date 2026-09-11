@@ -1,6 +1,6 @@
 import json,re
 from pathlib import Path
-s=Path('components/BSP/Common/error_info.hpp').read_text();body=s.split('enum class ErrorPoint')[1].split('{',1)[1].split('}',1)[0]
+s=Path('components/BSP/Error/error_info.hpp').read_text();body=s.split('enum class ErrorPoint')[1].split('{',1)[1].split('}',1)[0]
 d={};value=-1
 for item in body.split(','):
  item=item.strip()

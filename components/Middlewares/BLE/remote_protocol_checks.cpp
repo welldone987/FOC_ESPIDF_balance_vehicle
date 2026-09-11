@@ -2,7 +2,8 @@
 #include "motion_command.hpp"
 
 // 构建期执行真实解析器和状态机；不生成测试任务，不访问硬件。
-namespace vehicle::ble {
+namespace vehicle {
+namespace ble {
 namespace {
 constexpr bool valid(std::string_view text, bool legacy = false)
 {
@@ -28,4 +29,5 @@ static_assert(!control::freshCommand(command,999,0));
 static_assert(!control::freshCommand(command,1001,1001));
 static_assert(!control::freshCommand({},1001,0));
 } // namespace
-} // namespace vehicle::ble
+} // namespace ble
+} // namespace vehicle

@@ -31,7 +31,7 @@
 
 ```
 components/
-├── BSP/          # 板级引脚映射、BMI160 IMU、SimpleFOC 电机服务、电源监测
+├── BSP/          # Board、Error、Encoder、CurrentSensor、IMU、Motor、Power
 └── Middlewares/  # BLE 协议、平衡控制器、Wi-Fi 遥测、FreeRTOS 任务、诊断
 main/             # app_main：初始化检查与任务创建
 ```
@@ -45,6 +45,6 @@ idf.py build
 idf.py -p COMx flash monitor   # 将 COMx 替换为实际串口号
 ```
 
-Wi-Fi 凭据通过 menuconfig 配置：`CONFIG_VEHICLE_WIFI_SSID`、`CONFIG_VEHICLE_WIFI_PASSWORD`（遥测端口默认 3333）。控制器增益、限幅和滤波参数集中在 `components/BSP/Common/vehicle_config.hpp`。
+Wi-Fi 凭据通过 menuconfig 配置：`CONFIG_VEHICLE_WIFI_SSID`、`CONFIG_VEHICLE_WIFI_PASSWORD`（遥测端口默认 3333）。配置常量随所属模块存放，例如 `components/Middlewares/Control/control_config.hpp` 与 `components/BSP/Motor/motor_config.hpp`。
 
 每次推送到 `main` 或提交 PR 时，CI 会使用 ESP-IDF v6.0.2 完成整包构建。

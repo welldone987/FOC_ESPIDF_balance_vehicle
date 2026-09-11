@@ -8,7 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "i2c_bus.h"
-#include "vehicle_config.hpp"
+#include "imu_config.hpp"
 
 namespace vehicle {
 namespace imu {
@@ -150,7 +150,7 @@ esp_err_t calibrateGyroOffset(ErrorInfo *error)
     }
 
     const std::int64_t deadline = esp_timer_get_time() +
-        static_cast<std::int64_t>(config::kBmi160FocTimeoutMs) * 1000LL;
+        static_cast<std::int64_t>(config::kFocTimeoutMs) * 1000LL;
     while (esp_timer_get_time() < deadline) {
         result = readRegister(kRegStatus, &value, error);
         if (result != ESP_OK) {
@@ -197,7 +197,7 @@ esp_err_t initialize(ErrorInfo *error)
         return VEHICLE_ERROR(error, ESP_FAIL, imu_bus, application, 0);
     }
 
-    device = i2c_bus_device_create(bus, config::kBmi160Address, 0U);
+    device = i2c_bus_device_create(bus, config::kAddress, 0U);
     if (device == nullptr) {
         return VEHICLE_ERROR(error, ESP_FAIL, imu_device, application, 0);
     }
@@ -293,13 +293,13 @@ esp_err_t readAttitude(AttitudeSample *out, ErrorInfo *error)
 
     // 传感器原始计数按配置量程换算为g和deg/s。
     const float acceleration_x_g =
-        static_cast<float>(signedWord(raw + 6U)) / config::kBmi160AccelerationScale;
+        static_cast<float>(signedWord(raw + 6U)) / config::kAccelerationScale;
     const float acceleration_y_g =
-        static_cast<float>(signedWord(raw + 8U)) / config::kBmi160AccelerationScale;
+        static_cast<float>(signedWord(raw + 8U)) / config::kAccelerationScale;
     const float acceleration_z_g =
-        static_cast<float>(signedWord(raw + 10U)) / config::kBmi160AccelerationScale;
+        static_cast<float>(signedWord(raw + 10U)) / config::kAccelerationScale;
     const float gyro_y_deg_s =
-        static_cast<float>(signedWord(raw + 2U)) / config::kBmi160GyroScale;
+        static_cast<float>(signedWord(raw + 2U)) / config::kGyroScale;
 
     // 加速度计俯仰角使用X轴与重力方向的反正切，并保持车辆坐标符号。
     const float accelerometer_pitch_deg =
@@ -317,8 +317,8 @@ esp_err_t readAttitude(AttitudeSample *out, ErrorInfo *error)
 
     // 陀螺仪积分提供短期响应，加速度计角度修正长期漂移。
     // 独立平衡可能立即启动，首帧用测得姿态建基准，不能从0缓慢爬升后才发现倾倒。
-    const float gyro_weight = config::kAttitudeComplementaryTimeConstantS /
-        (config::kAttitudeComplementaryTimeConstantS + interval_s);
+    const float gyro_weight = config::kComplementaryTimeConstantS /
+        (config::kComplementaryTimeConstantS + interval_s);
     const float next_pitch_deg = previous_sample_us == 0 ? accelerometer_pitch_deg :
         gyro_weight *
             (last_pitch_deg + gyro_y_deg_s * interval_s) +

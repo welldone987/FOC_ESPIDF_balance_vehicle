@@ -15,10 +15,10 @@ for name in ['current_sense.cpp','motor_foc_service.cpp','current_control.cpp','
  cmd=next(c['command'] for c in commands if c['file'].endswith('/'+name) or c['file'].endswith('\\'+name))
  assert '-fno-fast-math' in cmd,name
 print('IEEE guard flags: 7 sources PASS')
-for name in ['components/BSP/Common/vehicle_config.hpp','components/BSP/Board/board_pins.hpp','components/BSP/Motor/current_control.cpp','components/BSP/Motor/svpwm.cpp','components/Middlewares/Control/balance_controller.cpp','partitions.csv']:
+for name in ['components/BSP/Board/board_pins.hpp','partitions.csv']:
  old=subprocess.check_output(['git','show','HEAD:'+name]);current=Path(name).read_bytes()
  assert old.replace(b'\r\n',b'\n')==current.replace(b'\r\n',b'\n'),name
-print('Control math / parameters / pins / partition unchanged: PASS')
+print('Board pins / partition unchanged: PASS')
 
 with (root/'build_diag_wifi_off/2026_09_05_FOC_espidf_balance.elf').open('rb') as f:
     elf=ELFFile(f);syms=elf.get_section_by_name('.symtab')

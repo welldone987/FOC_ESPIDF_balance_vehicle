@@ -12,7 +12,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "vehicle_config.hpp"
+#include "ble_config.hpp"
+#include "control_config.hpp"
 
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
@@ -116,8 +117,8 @@ int startAdvertising(ErrorInfo *error)
     ble_hs_adv_fields advertising_fields{};
     advertising_fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     advertising_fields.name = reinterpret_cast<std::uint8_t *>(
-        const_cast<char *>(config::kBleDeviceName));
-    advertising_fields.name_len = std::strlen(config::kBleDeviceName);
+        const_cast<char *>(config::kDeviceName));
+    advertising_fields.name_len = std::strlen(config::kDeviceName);
     advertising_fields.name_is_complete = 1U;
 
     int rc = ble_gap_adv_set_fields(&advertising_fields);
@@ -233,7 +234,7 @@ esp_err_t initialize(ErrorInfo *error)
     services[0].uuid = &service_uuid.u;
     services[0].characteristics = characteristics;
 
-    int rc = ble_svc_gap_device_name_set(config::kBleDeviceName);
+    int rc = ble_svc_gap_device_name_set(config::kDeviceName);
     if (rc != 0) {
         return VEHICLE_ERROR(error, ESP_FAIL, ble_name, nimble, rc);
     }
@@ -283,7 +284,7 @@ void run(QueueHandle_t command_queue)
         have_sequence=true;
         const control::MotionCommand command{
             parsed.throttle * config::kMaximumThrottleVelocityRadS / 100.0f,
-            -parsed.steering * config::kYawRateLimitRadS / 100.0f,
+            -parsed.steering * control::config::kYawRateLimitRadS / 100.0f,
             input.received_us,true};
         // 长度1最新值语义；过期判断使用接收时刻，不能因排队延长寿命。
         xQueueOverwrite(command_queue,&command);

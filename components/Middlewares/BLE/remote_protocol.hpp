@@ -4,7 +4,8 @@
 #include <cstdint>
 #include <string_view>
 
-namespace vehicle::ble {
+namespace vehicle {
+namespace ble {
 
 struct RemoteCommand {
     std::uint16_t sequence{};
@@ -70,4 +71,5 @@ constexpr bool newerSequence(std::uint16_t next, std::uint16_t previous)
     return delta != 0 && delta < 0x8000U;
 }
 
-} // namespace vehicle::ble
+} // namespace ble
+} // namespace vehicle

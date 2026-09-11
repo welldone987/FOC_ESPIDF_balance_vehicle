@@ -1,7 +1,8 @@
 #pragma once
 #include <cstdint>
 
-namespace vehicle::control {
+namespace vehicle {
+namespace control {
 // 车辆坐标：前进、前倾、右轮更快产生的偏航为正。
 struct ControlInput {
     float left_velocity_rad_s;
@@ -38,4 +39,5 @@ void initialize(ControllerState &state);
 void observeCurrentSaturation(ControllerState &state, bool saturated);
 // 姿态周期调用；内部累计实测dt，按外环周期更新速度和转向。
 ControlOutput update(ControllerState &state, const ControlInput &input, float dt_s);
-} // namespace vehicle::control
+} // namespace control
+} // namespace vehicle

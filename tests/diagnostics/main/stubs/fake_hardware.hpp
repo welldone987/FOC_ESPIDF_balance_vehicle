@@ -9,7 +9,7 @@ inline int mv[4]={1650,1650,1650,1650}, noise=0;
 inline std::int64_t now=1000, read_delay=0;
 inline std::int64_t pwm_delay=0;
 inline std::int64_t encoder_read_delay=0, math_delay=0;
-inline const vehicle::CurrentTiming *observed_current_timing=nullptr;
+inline const vehicle::motor::CurrentTiming *observed_current_timing=nullptr;
 inline int pwm_calls=0;
 inline std::uint8_t imu_raw[12]{};
 inline std::uint8_t imu_registers[256]{};
@@ -38,7 +38,7 @@ inline int adc_cali_delete_scheme_line_fitting(void*){return 0;}
 inline int adc_oneshot_del_unit(void*){return 0;}
 inline std::int64_t esp_timer_get_time(){
     // 在公开诊断阶段注入一次调度/计算延迟，不依赖生产代码读取时钟的次数。
-    if(fake::observed_current_timing && fake::observed_current_timing->stage==vehicle::CurrentStage::math){
+    if(fake::observed_current_timing && fake::observed_current_timing->stage==vehicle::motor::CurrentStage::math){
         fake::now+=fake::math_delay;fake::math_delay=0;
     }
     return fake::now;

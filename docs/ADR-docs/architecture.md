@@ -220,7 +220,7 @@ flowchart LR
 
 ### 1. 项目概览
 
-DengFOC V4 / ESP32-WROOM-32原生ESP-IDF v6.0.2固件。app_main建立静态资源并启动任务；BleTask负责蓝牙初始化、命令解析及速度/偏航目标转换；ControlTask独占传感器、电机和故障停机；可选Wi-Fi任务输出TCP遥测。错误统一为BSP/Common/error_info.hpp中的ErrorInfo / ErrorPoint，不再提供BLE状态码或DIAG回传。
+DengFOC V4 / ESP32-WROOM-32原生ESP-IDF v6.0.2固件。app_main建立静态资源并启动任务；BleTask负责蓝牙初始化、命令解析及速度/偏航目标转换；ControlTask独占传感器、电机和故障停机；可选Wi-Fi任务输出TCP遥测。错误统一为BSP/Error/error_info.hpp中的ErrorInfo / ErrorPoint，不再提供BLE状态码或DIAG回传。
 
 电机执行量为iq电流，BSP采用显式Iq投影、单Iq PI与六扇区SVPWM；两轮车辆前进映射均为-1。控制周期目标1000us，姿态5000us，速度/偏航10000us。初始化完成后独立零速平衡，BLE只改变运动目标；断连/过期目标归零，故障锁存停机。硬件确认门当前true，但实板证据仍未验证。详见[三环控制](../codex/control/current_cascade_tuning.md)。
 
@@ -232,7 +232,7 @@ flowchart LR
     Host[NimBLE主机] -->|原始报文队列| BLE
     BLE -->|MotionCommand队列| Control[ControlTask]
     Main --> Control
-    Control --> BSP[IMU / 电机]
+    Control --> BSP[IMU / Encoder / CurrentSensor / Motor]
     Control -->|遥测队列| Wifi[Wi-Fi TCP]
     Control --> Diag[统一错误 / RAM / Core dump]
 ```
@@ -419,7 +419,7 @@ NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、阻塞接�
 
 **所属模块**
 
-`Middlewares/Diagnostics / BSP/Common`
+`Middlewares/Diagnostics / BSP/Error`
 
 **Runtime Entry**
 
@@ -460,7 +460,7 @@ NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、阻塞接�
 | 我想修改…… | 从这里开始 | 推荐阅读路径 | 如何验证 | 相关 ADR |
 | --- | --- | --- | --- | --- |
 | 启动检查 | main/app_main.cpp | power → BleTask启动结果 → ControlTask | IDF构建；授权后台架 | 启动与硬件所有权 |
-| 控制算法 | balance_controller.cpp | vehicle_config → application_tasks → motor | 故障注入与IDF构建；实板时序 | 控制调度与状态所有权 |
+| 控制算法 | balance_controller.cpp | control_config → application_tasks → motor | 故障注入与IDF构建；实板时序 | 控制调度与状态所有权 |
 | BLE和网页 | remote_protocol.hpp | HTML → BLE run → motion_command → ControlTask | 编译期断言、网页测试、实机断连测试 | 通信与控制隔离 |
 | Wi-Fi/TCP | wifi_telemtry.cpp | Kconfig → 遥测队列 → service | 构建与实机共存 | 通信与控制隔离 |
 | 错误规范 | error_info.hpp | diagnostics → 串口 / Core dump | 故障注入、匹配ELF检查 | 故障证据与持久化边界 |
@@ -478,11 +478,14 @@ NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、阻塞接�
 | 模块 | 主要职责 | 对外入口 / 接口 | 依赖 |
 | --- | --- | --- | --- |
 | main | 一次启动和静态资源 | app_main | BSP、Middlewares、FreeRTOS |
-| BSP/Board、Common | GPIO、配置、统一错误及计时类型 | board::pins、config、ErrorInfo | ESP-IDF |
-| BSP/Power | 启动母线ADC与校准 | initialize / readBusVoltage | esp_adc、Board |
-| BSP/IMU | BMI160与互补滤波 | initialize / readAttitude | i2c_bus、Board、Common |
-| BSP/Motor | 编码器、采流、PI/SVPWM及输出 | initialize / runCurrentControl / inhibitOutputs | esp_simplefoc、Board |
-| Middlewares/Control | 外环、平衡优先分配、命令时效契约 | update / MotionCommand / freshCommand | Common |
+| BSP/Board | DengFOC V4 GPIO映射 | board::pins | ESP-IDF |
+| BSP/Error | 跨模块错误现场与稳定诊断编号 | ErrorInfo / ErrorPoint / VEHICLE_ERROR | ESP-IDF |
+| BSP/Power | 启动母线ADC与校准 | initialize / readBusVoltage | esp_adc、Board、Error |
+| BSP/IMU | BMI160与互补滤波 | initialize / readAttitude | i2c_bus、Board、Error |
+| BSP/Encoder | AS5600总线、角度缓存与SimpleFOC传感器接口 | CheckedEncoder | i2c_bus、Error、esp_simplefoc |
+| BSP/CurrentSensor | INA240 ADC、零点校准与三相电流重建 | initialize / read / release | esp_adc、Board、Error |
+| BSP/Motor | 电流PI、Iq滤波、SVPWM、对齐及输出 | initialize / runCurrentControl / inhibitOutputs | Encoder、CurrentSensor、esp_simplefoc、Board |
+| Middlewares/Control | 速度PI、姿态PD、平衡优先分配、命令时效及控制计时 | update / MotionCommand / ControlTiming | Motor执行器约束 |
 | Middlewares/FreeRTOS | 静态应用任务入口与调度 | bleTask / controlTask / wifiTelemetryTask | BSP、BLE、Control、Diagnostics |
 | Middlewares/BLE | GAP/GATT、原始报文队列与运动解析 | initialize / run | NimBLE、FreeRTOS、Control命令类型 |
 | Middlewares/wifi_telemtry | STA与TCP | initialize / service | Wi-Fi、lwIP |

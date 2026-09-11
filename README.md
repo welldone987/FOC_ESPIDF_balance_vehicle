@@ -31,7 +31,7 @@ All GPIO assignments are centralized in `components/BSP/Board/board_pins.hpp`.
 
 ```
 components/
-├── BSP/          # Board pin map, BMI160 IMU, SimpleFOC motor service, power monitor
+├── BSP/          # Board、Error、Encoder、CurrentSensor、IMU、Motor、Power
 └── Middlewares/  # BLE protocol, balance controller, Wi-Fi telemetry, FreeRTOS tasks, diagnostics
 main/             # app_main: initialization checks and task creation
 ```
@@ -45,6 +45,6 @@ idf.py build
 idf.py -p COMx flash monitor   # replace COMx with your serial port
 ```
 
-Wi-Fi credentials are set via menuconfig: `CONFIG_VEHICLE_WIFI_SSID`, `CONFIG_VEHICLE_WIFI_PASSWORD` (telemetry port defaults to 3333). All controller gains, limits and filters are defined in `components/BSP/Common/vehicle_config.hpp`.
+Wi-Fi credentials are set via menuconfig: `CONFIG_VEHICLE_WIFI_SSID`, `CONFIG_VEHICLE_WIFI_PASSWORD` (telemetry port defaults to 3333). Configuration constants live with their owning modules, such as `components/Middlewares/Control/control_config.hpp` and `components/BSP/Motor/motor_config.hpp`.
 
 CI builds the firmware with ESP-IDF v6.0.2 on every push/PR to `main`.

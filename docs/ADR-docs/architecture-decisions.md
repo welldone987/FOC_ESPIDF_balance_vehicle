@@ -230,7 +230,7 @@ flowchart LR
 
 **当前依据与验证边界**
 
-- 依据：components/Middlewares/FreeRTOS/application_tasks.cpp、application_tasks.hpp、components/BSP/Common/vehicle_config.hpp，项目AGENTS.md。
+- 依据：components/Middlewares/FreeRTOS/application_tasks.cpp、application_tasks.hpp、components/Middlewares/Control/control_config.hpp、components/BSP/Motor/motor_config.hpp，项目AGENTS.md。
 - 已核对：当前源码、配置与调用关系；验证范围见docs/codex/tasks/ble_motion_task.md；旧诊断验证记录不代表当前固件。
 - 未确认 / 未验证：硬件实际行为、时限及故障恢复见[待验证项](./architecture.md#6-unknown--unverified)。
 
@@ -277,7 +277,7 @@ flowchart LR
 
 **当前依据与验证边界**
 
-- 依据：components/Middlewares/BLE/ble_command_service.cpp、components/Middlewares/wifi_telemtry/wifi_telemtry.cpp、components/BSP/Common/vehicle_config.hpp，项目AGENTS.md。
+- 依据：components/Middlewares/BLE/ble_command_service.cpp、ble_config.hpp、components/Middlewares/wifi_telemtry/wifi_telemtry.cpp、wifi_telemtry_config.hpp，项目AGENTS.md。
 - 已核对：当前源码、配置与调用关系；验证范围见docs/codex/tasks/ble_motion_task.md；旧诊断验证记录不代表当前固件。
 - 未确认 / 未验证：硬件实际行为、时限及故障恢复见[待验证项](./architecture.md#6-unknown--unverified)。
 

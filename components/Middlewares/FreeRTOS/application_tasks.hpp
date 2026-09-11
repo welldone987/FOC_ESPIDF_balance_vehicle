@@ -5,7 +5,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
-namespace vehicle::freertos_tasks {
+namespace vehicle {
+namespace freertos_tasks {
 inline constexpr BaseType_t kControlCore=1, kServiceCore=0;
 inline constexpr UBaseType_t kControlPriority=20, kWifiPriority=4, kBlePriority=5;
 inline constexpr std::uint32_t kControlStackBytes=8192, kWifiStackBytes=8192, kBleStackBytes=4096;
@@ -22,4 +23,5 @@ void controlTask(void *argument);
 #if CONFIG_VEHICLE_WIFI_ENABLED
 void wifiTelemetryTask(void *argument);
 #endif
-}
+} // namespace freertos_tasks
+} // namespace vehicle
