@@ -54,4 +54,4 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
 
 # 电流目标的NaN/Inf拒绝检查不能被fast-math消除。
 set_source_files_properties(Motor/motor_foc_service.cpp Motor/current_control.cpp
-    Motor/current_sense.cpp Motor/svpwm.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math")
+    Motor/current_sense.cpp Motor/svpwm.cpp IMU/bmi160_attitude.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math")

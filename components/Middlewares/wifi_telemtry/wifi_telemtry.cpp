@@ -1,3 +1,5 @@
+#include "sdkconfig.h"
+#if CONFIG_VEHICLE_WIFI_ENABLED
 #include "wifi_telemtry.hpp"
 
 #include "sdkconfig.h"
@@ -336,3 +338,5 @@ void service(const TelemetrySnapshot *snapshot)
 
 } // namespace wifi_telemtry
 } // namespace vehicle
+
+#endif

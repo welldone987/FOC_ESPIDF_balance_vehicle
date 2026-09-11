@@ -33,6 +33,7 @@ endforeach()
 # 由构建系统直接解析。这样比从 include 文本猜依赖更可靠。
 set(requires
     BSP
+    espcoredump
     bt
     esp_event
     esp_netif

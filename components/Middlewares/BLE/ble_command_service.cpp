@@ -1,4 +1,7 @@
 #include "ble_command_service.hpp"
+#include "diagnostics.hpp"
+#include "ble_status_codec.hpp"
+#include <atomic>
 
 #include <algorithm>
 #include <bit>
@@ -37,7 +40,8 @@ ble_uuid128_t service_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x01));
 ble_uuid128_t command_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x02));
 ble_uuid128_t command_v2_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x04));
 ble_uuid128_t status_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x03));
-ble_gatt_chr_def characteristics[4]{};
+ble_uuid128_t diag_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x05));
+ble_gatt_chr_def characteristics[5]{};
 ble_gatt_svc_def services[2]{};
 
 // 临界区只复制/更新固定长度状态，不在锁内格式化、分配内存或调用NimBLE。
@@ -47,14 +51,16 @@ StatusSnapshot latest_status{};
 std::uint32_t connection_epoch{};
 // 以下连接/订阅/通知资源仅由NimBLE主机访问。
 ble_npl_callout status_timer{};
-std::uint16_t status_handle{};
+std::uint16_t status_handle{}, diag_handle{}, mtu{23};
+bool diag_subscribed{};
+diagnostics::ReplayCursor diag_cursor{};
+std::atomic<int> ready{0};
+ErrorInfo ready_error{};
 bool subscribed{};
 bool notify_pending{};
 bool initialized = false;
 std::uint8_t own_address_type = BLE_OWN_ADDR_PUBLIC;
 std::uint16_t connection_handle = BLE_HS_CONN_HANDLE_NONE;
-std::uint8_t readable_value[config::kMaximumBleCommandLength + 1U]{};
-std::uint16_t readable_value_length = 0U;
 
 void publishConnection(bool connected)
 {
@@ -62,63 +68,18 @@ void publishConnection(bool connected)
     remoteConnection(remote_state, connected);
     ++connection_epoch;
     portEXIT_CRITICAL(&state_lock);
-}
-
-// 手动编码小端字段，不把C++结构体内存布局当作无线协议。
-void put16(std::uint8_t *packet, std::size_t offset, std::uint16_t value)
-{
-    packet[offset] = static_cast<std::uint8_t>(value);
-    packet[offset + 1] = static_cast<std::uint8_t>(value >> 8);
-}
-
-// 按IEEE-754位模式检查，避免fast-math下isfinite被消除及NaN转整数。
-constexpr bool finiteTelemetry(float value)
-{
-    return (std::bit_cast<std::uint32_t>(value) & 0x7f800000U) != 0x7f800000U;
-}
-static_assert(!finiteTelemetry(std::bit_cast<float>(0x7fc00000U)));
-static_assert(!finiteTelemetry(std::bit_cast<float>(0x7f800000U)));
-static_assert(finiteTelemetry(-12.34f));
-
-std::int16_t scaled16(float value, float scale)
-{
-    return static_cast<std::int16_t>(std::clamp(value * scale, -32768.0f, 32767.0f));
+    diagnostics::bleState(connected, subscribed, diag_subscribed, mtu);
 }
 
 void encodeStatus(std::uint8_t (&packet)[20])
 {
-    const std::int64_t now_us = esp_timer_get_time();
+    const auto now=esp_timer_get_time();
     portENTER_CRITICAL(&state_lock);
-    const StatusSnapshot status = latest_status;
-    const RemoteState remote = remote_state;
-    const std::uint32_t epoch = connection_epoch;
+    const auto status=latest_status;
+    const auto remote=remote_state;
+    const auto epoch=connection_epoch;
     portEXIT_CRITICAL(&state_lock);
-    const bool same_session = status.command.connection_epoch == epoch;
-    const bool stale = status.sampled_us == 0 || now_us - status.sampled_us >= kCommandTimeoutUs;
-    const bool valid = status.sensors_valid && !stale && same_session &&
-        finiteTelemetry(status.pitch_deg) && finiteTelemetry(status.left_velocity_rad_s) &&
-        finiteTelemetry(status.right_velocity_rad_s) &&
-        finiteTelemetry(status.command.throttle_velocity_rad_s) &&
-        finiteTelemetry(status.command.steering_voltage_v);
-    RemoteMode mode = status.command.mode;
-    if (mode != RemoteMode::fault && mode != RemoteMode::emergency && !same_session) {
-        mode = remote.connected ? RemoteMode::idle : RemoteMode::disconnected;
-    }
-    packet[0] = 2;
-    packet[1] = static_cast<std::uint8_t>(mode);
-    packet[2] = (remote.connected ? 1U : 0U) | (remote.command.legacy ? 2U : 0U) |
-                (valid ? 4U : 0U) | (same_session && status.command.sequence_valid ? 8U : 0U) |
-                (stale ? 16U : 0U);
-    packet[3] = status.fault;
-    put16(packet, 4, same_session ? status.command.sequence : 0);
-    const auto age_ms = remote.has_command ? (now_us - remote.received_us) / 1000 : 65535;
-    put16(packet, 6, static_cast<std::uint16_t>(std::clamp<std::int64_t>(age_ms, 0, 65535)));
-    put16(packet, 8, valid ? static_cast<std::uint16_t>(scaled16(status.pitch_deg, 100.0f)) : 0);
-    put16(packet, 10, valid ? static_cast<std::uint16_t>(scaled16(status.left_velocity_rad_s, 100.0f)) : 0);
-    put16(packet, 12, valid ? static_cast<std::uint16_t>(scaled16(status.right_velocity_rad_s, 100.0f)) : 0);
-    put16(packet, 14, valid ? static_cast<std::uint16_t>(scaled16(status.command.throttle_velocity_rad_s, 100.0f)) : 0);
-    put16(packet, 16, valid ? static_cast<std::uint16_t>(scaled16(status.command.steering_voltage_v, 1000.0f)) : 0);
-    put16(packet, 18, static_cast<std::uint16_t>(status.sample_sequence));
+    encodeStatusPacket(packet,status,remote,epoch,now);
 }
 
 int statusAccess(std::uint16_t, std::uint16_t, ble_gatt_access_ctxt *context, void *)
@@ -132,6 +93,34 @@ int statusAccess(std::uint16_t, std::uint16_t, ble_gatt_access_ctxt *context, vo
         ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
 }
 
+
+int diagAccess(std::uint16_t, std::uint16_t, ble_gatt_access_ctxt *context, void *)
+{
+    if (!context || context->op != BLE_GATT_ACCESS_OP_READ_CHR) { return BLE_ATT_ERR_READ_NOT_PERMITTED; }
+    std::uint8_t packet[20]{};
+    diagnostics::metadata(packet);
+    return os_mbuf_append(context->om, packet, sizeof(packet)) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+}
+void rememberBle(int rc, ErrorPoint point)
+{
+    if (!rc) { return; }
+    ErrorInfo error{};
+    errorAt(&error, ESP_FAIL, point, ErrorDomain::nimble, rc, __FILE__, __func__, __LINE__);
+    diagnostics::bleError(error);
+}
+void notifyDiag()
+{
+    if (!diag_subscribed || connection_handle == BLE_HS_CONN_HANDLE_NONE) { return; }
+    diagnostics::Event event{};
+    bool first{};
+    if (!diagnostics::replay(diag_cursor,event,first)) { return; }
+    std::uint8_t packet[14]{};
+    diagnostics::encodeEvent(event,packet);
+    auto *buffer=ble_hs_mbuf_from_flat(packet,sizeof(packet));
+    const int rc=buffer ? ble_gatts_notify_custom(connection_handle,diag_handle,buffer) : BLE_HS_ENOMEM;
+    rememberBle(rc,ErrorPoint::ble_diag_notify);
+    diagnostics::acceptReplay(diag_cursor,event,first,rc == 0);
+}
 // 回调运行在NimBLE主机事件队列；不为遥测新增任务或积压历史帧。
 void notifyStatus(ble_npl_event *)
 {
@@ -142,15 +131,18 @@ void notifyStatus(ble_npl_event *)
         if (buffer != nullptr) {
             notify_pending = true;
             // notify_custom无论成功与否都会消费mbuf。
-            if (ble_gatts_notify_custom(connection_handle, status_handle, buffer) != 0) {
+            const int rc=ble_gatts_notify_custom(connection_handle, status_handle, buffer);
+            rememberBle(rc,ErrorPoint::ble_notify);
+            if (rc != 0) {
                 notify_pending = false;
             }
         }
     }
+    notifyDiag();
     (void)ble_npl_callout_reset(&status_timer, ble_npl_time_ms_to_ticks32(100));
 }
 
-int startAdvertising();
+int startAdvertising(ErrorInfo *error=nullptr);
 
 // gapEvent()处理连接生命周期和广播结束事件。
 int gapEvent(ble_gap_event *event, void *)
@@ -176,17 +168,25 @@ int gapEvent(ble_gap_event *event, void *)
     case BLE_GAP_EVENT_DISCONNECT:
         if (event->disconnect.conn.conn_handle != connection_handle) { return 0; }
         connection_handle = BLE_HS_CONN_HANDLE_NONE;
-        subscribed = false;
+        subscribed = false; diag_subscribed=false; mtu=23; diag_cursor={};
         notify_pending = false;
         publishConnection(false);
         (void)startAdvertising();
         return 0;
 
+    case BLE_GAP_EVENT_MTU:
+        mtu=event->mtu.value;
+        diagnostics::bleState(connection_handle != BLE_HS_CONN_HANDLE_NONE,subscribed,diag_subscribed,mtu);
+        return 0;
     case BLE_GAP_EVENT_SUBSCRIBE:
+        if (event->subscribe.conn_handle == connection_handle && event->subscribe.attr_handle == diag_handle) {
+            diag_subscribed=event->subscribe.cur_notify != 0; diag_cursor={};
+        }
         if (event->subscribe.conn_handle == connection_handle &&
             event->subscribe.attr_handle == status_handle) {
             subscribed = event->subscribe.cur_notify != 0;
         }
+        diagnostics::bleState(connection_handle != BLE_HS_CONN_HANDLE_NONE,subscribed,diag_subscribed,mtu);
         return 0;
     case BLE_GAP_EVENT_NOTIFY_TX:
         if (event->notify_tx.conn_handle == connection_handle &&
@@ -204,7 +204,7 @@ int gapEvent(ble_gap_event *event, void *)
 }
 
 // startAdvertising()发布设备名和服务UUID，并启动可连接广播。
-int startAdvertising()
+int startAdvertising(ErrorInfo *error)
 {
     ble_hs_adv_fields advertising_fields{};
     advertising_fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
@@ -215,6 +215,8 @@ int startAdvertising()
 
     int rc = ble_gap_adv_set_fields(&advertising_fields);
     if (rc != 0) {
+        VEHICLE_ERROR(error,ESP_FAIL,ble_adv_fields,nimble,rc);
+        rememberBle(rc,ErrorPoint::ble_adv_fields);
         return rc;
     }
 
@@ -225,6 +227,8 @@ int startAdvertising()
 
     rc = ble_gap_adv_rsp_set_fields(&scan_response_fields);
     if (rc != 0) {
+        VEHICLE_ERROR(error,ESP_FAIL,ble_scan_fields,nimble,rc);
+        rememberBle(rc,ErrorPoint::ble_scan_fields);
         return rc;
     }
 
@@ -234,13 +238,18 @@ int startAdvertising()
 
     rc = ble_gap_adv_start(
         own_address_type, nullptr, BLE_HS_FOREVER, &parameters, gapEvent, nullptr);
-    return rc == BLE_HS_EALREADY ? 0 : rc;
+    if (rc == BLE_HS_EALREADY) { rc=0; }
+    if (rc) { VEHICLE_ERROR(error,ESP_FAIL,ble_advertise,nimble,rc); }
+    rememberBle(rc,ErrorPoint::ble_advertise);
+    return rc;
 }
 
 // onReset()满足NimBLE复位回调接口；复位信息由上层诊断路径处理。
-void onReset(int)
+void onReset(int reason)
 {
+    rememberBle(reason,ErrorPoint::ble_reset);
     connection_handle = BLE_HS_CONN_HANDLE_NONE;
+    diag_subscribed=false; diag_cursor={}; mtu=23;
     subscribed = false;
     notify_pending = false;
     ble_npl_callout_stop(&status_timer);
@@ -250,12 +259,15 @@ void onReset(int)
 // onSync()取得本机地址类型后开始广播。
 void onSync()
 {
-    const int rc = ble_hs_id_infer_auto(0, &own_address_type);
-    if (rc != 0) {
-        return;
+    ErrorInfo sync_error{};
+    int rc = ble_hs_id_infer_auto(0, &own_address_type);
+    if (rc) { VEHICLE_ERROR(&sync_error,ESP_FAIL,ble_address,nimble,rc); }
+    else { rc=startAdvertising(&sync_error); }
+    if (ready.load(std::memory_order_acquire) == 0) {
+        if (rc != 0) { ready_error=sync_error; }
+        ready.store(rc == 0 ? 1 : -1,std::memory_order_release);
     }
-
-    (void)startAdvertising();
+    if (rc) { diagnostics::bleError(sync_error); }
     (void)ble_npl_callout_reset(&status_timer, ble_npl_time_ms_to_ticks32(100));
 }
 
@@ -275,9 +287,10 @@ int characteristicAccess(std::uint16_t conn_handle,
     if (context == nullptr || context->om == nullptr) { return BLE_ATT_ERR_UNLIKELY; }
     const bool legacy = ble_uuid_cmp(context->chr->uuid, &command_uuid.u) == 0;
     if (context->op == BLE_GATT_ACCESS_OP_READ_CHR && legacy) {
-        return os_mbuf_append(context->om, readable_value, readable_value_length) == 0
-                   ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        constexpr char unsupported[]="legacy control unsupported";
+        return os_mbuf_append(context->om, unsupported, sizeof(unsupported)-1) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
     }
+    if (legacy) { return BLE_ATT_ERR_WRITE_NOT_PERMITTED; }
     if (context->op != BLE_GATT_ACCESS_OP_WRITE_CHR || conn_handle != connection_handle) {
         return BLE_ATT_ERR_WRITE_NOT_PERMITTED;
     }
@@ -299,30 +312,21 @@ int characteristicAccess(std::uint16_t conn_handle,
     const bool accepted = acceptCommand(remote_state, command, now_us);
     portEXIT_CRITICAL(&state_lock);
     if (!accepted) { return BLE_ATT_ERR_VALUE_NOT_ALLOWED; }
-    if (legacy) {
-        std::memcpy(readable_value, incoming, length);
-        readable_value_length = length;
-    }
+
     return 0;
 }
 
 } // namespace
 
-esp_err_t initialize()
+esp_err_t initialize(ErrorInfo *error)
 {
     if (initialized) {
         return ESP_OK;
     }
 
-    // 先初始化NVS再启动NimBLE控制器；失败时不自动擦除NVS持久化数据。
-    const esp_err_t nvs_result = nvs_flash_init();
-    if (nvs_result != ESP_OK) {
-        return nvs_result;
-    }
-
     const esp_err_t nimble_result = nimble_port_init();
     if (nimble_result != ESP_OK) {
-        return nimble_result;
+        return VEHICLE_ERROR(error, nimble_result, ble_init, esp, nimble_result);
     }
 
     ble_svc_gap_init();
@@ -341,41 +345,54 @@ esp_err_t initialize()
     characteristics[2].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY;
     characteristics[2].val_handle = &status_handle;
 
+    characteristics[3].uuid=&diag_uuid.u;
+    characteristics[3].access_cb=diagAccess;
+    characteristics[3].flags=BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY;
+    characteristics[3].val_handle=&diag_handle;
+
     services[0].type = BLE_GATT_SVC_TYPE_PRIMARY;
     services[0].uuid = &service_uuid.u;
     services[0].characteristics = characteristics;
 
     int rc = ble_svc_gap_device_name_set(config::kBleDeviceName);
     if (rc != 0) {
-        return ESP_FAIL;
+        return VEHICLE_ERROR(error, ESP_FAIL, ble_name, nimble, rc);
     }
 
     rc = ble_gatts_count_cfg(services);
     if (rc != 0) {
-        return ESP_FAIL;
+        return VEHICLE_ERROR(error, ESP_FAIL, ble_count, nimble, rc);
     }
 
     rc = ble_gatts_add_svcs(services);
     if (rc != 0) {
-        return ESP_FAIL;
+        return VEHICLE_ERROR(error, ESP_FAIL, ble_services, nimble, rc);
     }
 
-    std::memcpy(
-        readable_value,
-        config::kBleInitialValue,
-        sizeof(config::kBleInitialValue) - 1U);
-    readable_value_length = sizeof(config::kBleInitialValue) - 1U;
-
-    if (ble_npl_callout_init(&status_timer, nimble_port_get_dflt_eventq(), notifyStatus, nullptr) != 0) {
-        return ESP_FAIL;
+    rc=ble_npl_callout_init(&status_timer, nimble_port_get_dflt_eventq(), notifyStatus, nullptr);
+    if (rc != 0) {
+        return VEHICLE_ERROR(error, ESP_FAIL, ble_callout, nimble, rc);
     }
     ble_hs_cfg.reset_cb = onReset;
     ble_hs_cfg.sync_cb = onSync;
 
-    initialized = true;
     nimble_port_freertos_init(hostTask);
-
+    const auto deadline=esp_timer_get_time()+5000000;
+    while (ready.load(std::memory_order_acquire) == 0 && esp_timer_get_time()<deadline) { vTaskDelay(pdMS_TO_TICKS(10)); }
+    const int state=ready.load(std::memory_order_acquire);
+    if (state == 0) { return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, ble_ready_timeout, application, 0); }
+    if (state < 0) { if (error) { *error=ready_error; } return ESP_FAIL; }
+    initialized=true;
     return ESP_OK;
+}
+
+void allowControl()
+{
+    portENTER_CRITICAL(&state_lock);
+    remote_state.boot_complete=true;
+    remote_state.run_allowed=!remote_state.fault && !remote_state.emergency;
+    remote_state.pending=false;
+    portEXIT_CRITICAL(&state_lock);
 }
 
 CommandSnapshot latestCommand()
@@ -414,6 +431,9 @@ void publishStatus(const StatusSnapshot &status)
 void publishFault(std::uint8_t fault, bool emergency)
 {
     portENTER_CRITICAL(&state_lock);
+    remote_state.fault=!emergency;
+    remote_state.emergency=remote_state.emergency || emergency;
+    remote_state.run_allowed=false;
     latest_status = StatusSnapshot{};
     latest_status.command.mode = emergency ? RemoteMode::emergency : RemoteMode::fault;
     latest_status.command.connection_epoch = connection_epoch;

@@ -1,133 +1,99 @@
 #include "application_tasks.hpp"
 #include "ble_command_service.hpp"
 #include "diagnostics.hpp"
+#include "motor_foc_service.hpp"
 #include "power_monitor.hpp"
 #include "vehicle_config.hpp"
 #include "wifi_telemtry.hpp"
-
-#include <cstdint>
-
-#include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
-#include "freertos/task.h"
-
-/*
- * app_main完成启动前置检查，建立静态队列和任务资源，再把实时工作交给三个FreeRTOS任务。
- * 初始化顺序为电源与欠压检查、BLE服务、诊断任务、控制任务和Wi-Fi遥测任务。
- */
+#include "esp_core_dump.h"
+#include "esp_log.h"
+#include "nvs_flash.h"
+#include "sdkconfig.h"
 
 namespace {
-
-// telemetry_queue_storage和telemetry_queue_buffer为单元素最新值队列提供静态存储。
-StaticQueue_t telemetry_queue_storage{};
-std::uint8_t telemetry_queue_buffer[sizeof(vehicle::wifi_telemtry::TelemetrySnapshot)]{};
-
-// 三组静态TCB和栈存储分别绑定ControlTask、WifiTelemetryTask和DiagnosticsTask。
-StaticTask_t control_task_storage{};
-StackType_t control_task_stack[vehicle::freertos_tasks::kControlStackBytes]{};
-StaticTask_t wifi_task_storage{};
-StackType_t wifi_task_stack[vehicle::freertos_tasks::kWifiStackBytes]{};
-StaticTask_t diagnostics_task_storage{};
-StackType_t diagnostics_task_stack[vehicle::freertos_tasks::kDiagnosticsStackBytes]{};
-
-// task_context由所有任务共享，保存最新遥测队列和已创建任务句柄。
-vehicle::freertos_tasks::TaskContext task_context{};
-
-// initializeApplication()完成电源、启动母线电压和BLE初始化检查。
-bool initializeApplication()
+using namespace vehicle;
+StaticTask_t control_storage{};
+StackType_t control_stack[freertos_tasks::kControlStackBytes]{};
+freertos_tasks::TaskContext context{};
+#if CONFIG_VEHICLE_WIFI_ENABLED
+StaticQueue_t queue_storage{};
+std::uint8_t queue_buffer[sizeof(wifi_telemtry::TelemetrySnapshot)]{};
+StaticTask_t wifi_storage{};
+StackType_t wifi_stack[freertos_tasks::kWifiStackBytes]{};
+#endif
+bool finish(diagnostics::BootStep step, esp_err_t rc, const ErrorInfo &error, bool required=true)
 {
-    esp_err_t result = vehicle::power::initialize();
-    vehicle::diagnostics::logInitialization("Power", result);
-    if (result != ESP_OK) {
-        return false;
-    }
-
-    // bus_voltage_v保存启动时恢复后的直流母线电压，单位V。
-    float bus_voltage_v = 0.0f;
-    result = vehicle::power::readBusVoltage(&bus_voltage_v);
-    if (result == ESP_OK &&
-        bus_voltage_v <= vehicle::config::kStartupUndervoltageThresholdV) {
-        result = ESP_ERR_INVALID_STATE;
-    }
-    vehicle::diagnostics::logInitialization("Startup voltage", result);
-    if (result != ESP_OK) {
-        return false;
-    }
-
-    result = vehicle::ble::initialize();
-    vehicle::diagnostics::logInitialization("BLE", result);
-    return result == ESP_OK;
+    if (rc == ESP_OK) { diagnostics::boot(step,"OK"); return true; }
+    if (!required) { diagnostics::boot(step,"DEGRADED",rc); diagnostics::record(error); return false; }
+    ErrorInfo secondary{};
+    const auto off=motor::inhibitOutputs(&secondary);
+    diagnostics::record(error,true);
+    if (off != ESP_OK) { diagnostics::record(secondary); }
+    ble::publishFault(1);
+    motor::disableOutputs();
+    diagnostics::boot(step,"FAIL",rc);
+    ESP_LOGE("boot","BOOT_SUMMARY FAIL point=%u raw=%ld at %s:%lu",static_cast<unsigned>(error.point_id),static_cast<long>(error.raw_code),error.file,static_cast<unsigned long>(error.line));
+    return false;
 }
-
-} // namespace
-
+}
 extern "C" void app_main(void)
 {
-    // 队列长度为1，控制任务只覆盖最新快照，Wi-Fi任务按需读取。
-    task_context.telemetry_queue = xQueueCreateStatic(
-        1U,
-        sizeof(vehicle::wifi_telemtry::TelemetrySnapshot),
-        telemetry_queue_buffer,
-        &telemetry_queue_storage);
-    vehicle::diagnostics::logInitialization(
-        "Telemetry queue",
-        task_context.telemetry_queue == nullptr ? ESP_ERR_NO_MEM : ESP_OK);
-    // 资源或启动检查失败时删除app_main任务，不创建电机控制链路。
-    if (task_context.telemetry_queue == nullptr || !initializeApplication()) {
-        vTaskDelete(nullptr);
+    using diagnostics::BootStep;
+    ErrorInfo error{};
+    // First hardware action establishes safe output. Static diagnostic storage needs no allocation.
+    auto rc=motor::inhibitOutputs(&error);
+    diagnostics::initialize();
+    diagnostics::boot(BootStep::safe_output,"BEGIN");
+    if (!finish(BootStep::safe_output,rc,error)) { return; }
+    diagnostics::boot(BootStep::storage,"BEGIN");
+    diagnostics::boot(BootStep::storage,"OK");
+    diagnostics::boot(BootStep::power,"BEGIN");
+    if (!finish(BootStep::power,power::initialize(&error),error)) { return; }
+    diagnostics::boot(BootStep::voltage,"BEGIN");
+    float voltage{};
+    rc=power::readBusVoltage(&voltage,&error);
+    if (rc == ESP_OK && voltage <= config::kStartupUndervoltageThresholdV) {
+        rc=VEHICLE_ERROR(&error,ESP_ERR_INVALID_STATE,undervoltage,application,0,
+            voltage,config::kStartupUndervoltageThresholdV,-1,3,-1);
     }
-
-    // 诊断任务运行在服务核心，先于控制任务创建以便记录后续初始化结果。
-    const TaskHandle_t diagnostics = xTaskCreateStaticPinnedToCore(
-        vehicle::freertos_tasks::diagnosticsTask,
-        "DiagnosticsTask",
-        vehicle::freertos_tasks::kDiagnosticsStackBytes,
-        &task_context,
-        vehicle::freertos_tasks::kDiagnosticsPriority,
-        diagnostics_task_stack,
-        &diagnostics_task_storage,
-        vehicle::freertos_tasks::kServiceCore);
-    vehicle::diagnostics::logInitialization(
-        "DiagnosticsTask", diagnostics == nullptr ? ESP_ERR_NO_MEM : ESP_OK);
-    if (diagnostics == nullptr) {
-        vTaskDelete(nullptr);
+    if (!finish(BootStep::voltage,rc,error)) { return; }
+    diagnostics::boot(BootStep::nvs,"BEGIN");
+    rc=nvs_flash_init();
+    if (rc != ESP_OK) { VEHICLE_ERROR(&error,rc,nvs,esp,rc); }
+    if (!finish(BootStep::nvs,rc,error)) { return; }
+    diagnostics::boot(BootStep::core_dump,"BEGIN");
+    size_t address{},size{};
+    rc=esp_core_dump_image_get(&address,&size);
+    if (rc == ESP_OK) { rc=esp_core_dump_image_check(); }
+    if (rc == ESP_ERR_NOT_FOUND) {
+        diagnostics::boot(BootStep::core_dump,"SKIP",rc);
+    } else {
+        if (rc != ESP_OK) { VEHICLE_ERROR(&error,rc,core_dump,esp,rc); }
+        finish(BootStep::core_dump,rc,error,false);
     }
-
-    // 控制任务固定在Core 1运行，承担高频传感器、控制器和FOC调用链。
-    const TaskHandle_t control = xTaskCreateStaticPinnedToCore(
-        vehicle::freertos_tasks::controlTask,
-        "ControlTask",
-        vehicle::freertos_tasks::kControlStackBytes,
-        &task_context,
-        vehicle::freertos_tasks::kControlPriority,
-        control_task_stack,
-        &control_task_storage,
-        vehicle::freertos_tasks::kControlCore);
-    vehicle::diagnostics::logInitialization(
-        "ControlTask", control == nullptr ? ESP_ERR_NO_MEM : ESP_OK);
-    if (control == nullptr) {
-        vTaskDelete(nullptr);
+    diagnostics::boot(BootStep::ble,"BEGIN");
+    if (!finish(BootStep::ble,ble::initialize(&error),error)) { return; }
+#if CONFIG_VEHICLE_WIFI_ENABLED
+    diagnostics::boot(BootStep::wifi,"BEGIN");
+    rc=wifi_telemtry::initialize();
+    if (rc == ESP_OK) {
+        context.telemetry_queue=xQueueCreateStatic(1,sizeof(wifi_telemtry::TelemetrySnapshot),queue_buffer,&queue_storage);
+        if (!context.telemetry_queue) { rc=ESP_ERR_NO_MEM; }
     }
-    // 发布控制任务句柄后，DiagnosticsTask才能读取其栈水位。
-    task_context.control_handle.store(control, std::memory_order_release);
-
-    // Wi-Fi任务固定在服务核心，避免网络服务进入控制任务的执行路径。
-    const TaskHandle_t wifi = xTaskCreateStaticPinnedToCore(
-        vehicle::freertos_tasks::wifiTelemetryTask,
-        "WifiTelemetryTask",
-        vehicle::freertos_tasks::kWifiStackBytes,
-        &task_context,
-        vehicle::freertos_tasks::kWifiPriority,
-        wifi_task_stack,
-        &wifi_task_storage,
-        vehicle::freertos_tasks::kServiceCore);
-    vehicle::diagnostics::logInitialization(
-        "WifiTelemetryTask", wifi == nullptr ? ESP_ERR_NO_MEM : ESP_OK);
-    if (wifi == nullptr) {
-        vTaskDelete(nullptr);
+    if (rc == ESP_OK) {
+        const auto task=xTaskCreateStaticPinnedToCore(freertos_tasks::wifiTelemetryTask,"WifiTelemetryTask",
+            freertos_tasks::kWifiStackBytes,&context,freertos_tasks::kWifiPriority,wifi_stack,&wifi_storage,freertos_tasks::kServiceCore);
+        if (!task) { rc=ESP_ERR_NO_MEM; context.telemetry_queue=nullptr; }
     }
-    // 发布Wi-Fi任务句柄供低频诊断查询栈水位。
-    task_context.wifi_handle.store(wifi, std::memory_order_release);
-    // app_main只负责一次性创建资源，完成后释放自身任务槽位。
-    vTaskDelete(nullptr);
+    if (rc != ESP_OK) { VEHICLE_ERROR(&error,rc,wifi_init,esp,rc); }
+    finish(BootStep::wifi,rc,error,false);
+#else
+    diagnostics::boot(BootStep::wifi,"SKIP");
+#endif
+    const auto task=xTaskCreateStaticPinnedToCore(freertos_tasks::controlTask,"ControlTask",
+        freertos_tasks::kControlStackBytes,&context,freertos_tasks::kControlPriority,control_stack,&control_storage,freertos_tasks::kControlCore);
+    if (!task) {
+        VEHICLE_ERROR(&error,ESP_ERR_NO_MEM,boot_resource,application,0);
+        finish(BootStep::timer,ESP_ERR_NO_MEM,error);
+    }
 }

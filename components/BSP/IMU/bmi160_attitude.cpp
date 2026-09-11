@@ -61,30 +61,49 @@ float last_pitch_deg = 0.0f;
 std::int64_t previous_sample_us = 0;
 
 // readRegister()从BMI160指定寄存器读取一个字节。
-esp_err_t readRegister(std::uint8_t address, std::uint8_t *value)
+esp_err_t readRegister(std::uint8_t address, std::uint8_t *value, ErrorInfo *error)
 {
     if (device == nullptr || value == nullptr) {
-        return ESP_ERR_INVALID_STATE;
+        return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, imu_state, application, 0);
     }
-    return i2c_bus_read_byte(device, address, value);
+    const esp_err_t rc = i2c_bus_read_byte(device, address, value);
+    return rc == ESP_OK ? ESP_OK : VEHICLE_ERROR(error, rc, imu_read, esp, rc, address, 0, -1, 1);
 }
 
 // readRegisters()从连续寄存器地址读取一段原始数据。
-esp_err_t readRegisters(std::uint8_t address, std::uint8_t *data, std::size_t length)
+esp_err_t readRegisters(std::uint8_t address, std::uint8_t *data, std::size_t length, ErrorInfo *error)
 {
     if (device == nullptr || data == nullptr || length == 0U) {
-        return ESP_ERR_INVALID_ARG;
+        return VEHICLE_ERROR(error, ESP_ERR_INVALID_ARG, imu_state, application, 0);
     }
-    return i2c_bus_read_bytes(device, address, length, data);
+    const esp_err_t rc = i2c_bus_read_bytes(device, address, length, data);
+    return rc == ESP_OK ? ESP_OK : VEHICLE_ERROR(error, rc, imu_read, esp, rc, address, 0, -1, 1);
 }
 
 // writeRegister()向BMI160指定寄存器写入一个字节。
-esp_err_t writeRegister(std::uint8_t address, std::uint8_t value)
+esp_err_t writeRegister(std::uint8_t address, std::uint8_t value, ErrorInfo *error)
 {
     if (device == nullptr) {
-        return ESP_ERR_INVALID_STATE;
+        return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, imu_state, application, 0);
     }
-    return i2c_bus_write_byte(device, address, value);
+    const esp_err_t rc = i2c_bus_write_byte(device, address, value);
+    if (rc == ESP_OK) { return ESP_OK; }
+    ErrorPoint point=ErrorPoint::imu_write;
+    switch (address) {
+    case kRegCmd:
+        point=value == kCmdSoftReset ? ErrorPoint::imu_soft_reset :
+              value == kCmdAccelNormal ? ErrorPoint::imu_accel_normal :
+              value == kCmdGyroNormal ? ErrorPoint::imu_gyro_normal : ErrorPoint::imu_foc_start;
+        break;
+    case kRegAccelRange: point=ErrorPoint::imu_accel_range; break;
+    case kRegAccelConf: point=ErrorPoint::imu_accel_conf; break;
+    case kRegGyroRange: point=ErrorPoint::imu_gyro_range; break;
+    case kRegGyroConf: point=ErrorPoint::imu_gyro_conf; break;
+    case kRegFocConf: point=ErrorPoint::imu_foc_config; break;
+    case kRegOffset6: point=ErrorPoint::imu_foc_offset; break;
+    default: break;
+    }
+    return errorAt(error,rc,point,ErrorDomain::esp,rc,__FILE__,__func__,__LINE__,value,0,address,5);
 }
 
 // signedWord()按BMI160低字节在前的格式把两个字节还原为有符号计数。
@@ -96,13 +115,13 @@ std::int16_t signedWord(const std::uint8_t *bytes)
     return static_cast<std::int16_t>(value);
 }
 
-// waitForPmuNormal()等待加速度计和陀螺仪都进入正常工作状态。
-esp_err_t waitForPmuNormal()
+// waitForPmuNormal(ErrorInfo *error)等待加速度计和陀螺仪都进入正常工作状态。
+esp_err_t waitForPmuNormal(ErrorInfo *error)
 {
     const std::int64_t deadline = esp_timer_get_time() + 250000LL;
     while (esp_timer_get_time() < deadline) {
         std::uint8_t status = 0U;
-        const esp_err_t result = readRegister(kRegPmuStatus, &status);
+        const esp_err_t result = readRegister(kRegPmuStatus, &status, error);
         if (result != ESP_OK) {
             return result;
         }
@@ -111,24 +130,24 @@ esp_err_t waitForPmuNormal()
         }
         vTaskDelay(pdMS_TO_TICKS(1U));
     }
-    return ESP_ERR_TIMEOUT;
+    return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, imu_pmu_timeout, application, 0);
 }
 
-// calibrateGyroOffset()启动BMI160陀螺仪FOC并保存硬件偏置使能位。
-esp_err_t calibrateGyroOffset()
+// calibrateGyroOffset(ErrorInfo *error)启动BMI160陀螺仪FOC并保存硬件偏置使能位。
+esp_err_t calibrateGyroOffset(ErrorInfo *error)
 {
     std::uint8_t value = 0U;
-    esp_err_t result = readRegister(kRegFocConf, &value);
+    esp_err_t result = readRegister(kRegFocConf, &value, error);
     if (result != ESP_OK) {
         return result;
     }
 
-    result = writeRegister(kRegFocConf, static_cast<std::uint8_t>(value | kFocGyroEnable));
+    result = writeRegister(kRegFocConf, static_cast<std::uint8_t>(value | kFocGyroEnable), error);
     if (result != ESP_OK) {
         return result;
     }
 
-    result = writeRegister(kRegCmd, kCmdStartFoc);
+    result = writeRegister(kRegCmd, kCmdStartFoc, error);
     if (result != ESP_OK) {
         return result;
     }
@@ -136,7 +155,7 @@ esp_err_t calibrateGyroOffset()
     const std::int64_t deadline = esp_timer_get_time() +
         static_cast<std::int64_t>(config::kBmi160FocTimeoutMs) * 1000LL;
     while (esp_timer_get_time() < deadline) {
-        result = readRegister(kRegStatus, &value);
+        result = readRegister(kRegStatus, &value, error);
         if (result != ESP_OK) {
             return result;
         }
@@ -147,21 +166,21 @@ esp_err_t calibrateGyroOffset()
     }
 
     if ((value & kFocReady) == 0U) {
-        return ESP_ERR_TIMEOUT;
+        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, imu_foc_timeout, application, 0);
     }
 
-    result = readRegister(kRegOffset6, &value);
+    result = readRegister(kRegOffset6, &value, error);
     if (result != ESP_OK) {
         return result;
     }
     return writeRegister(
         kRegOffset6,
-        static_cast<std::uint8_t>(value | kGyroOffsetEnable));
+        static_cast<std::uint8_t>(value | kGyroOffsetEnable), error);
 }
 
 } // namespace
 
-esp_err_t initialize()
+esp_err_t initialize(ErrorInfo *error)
 {
     if (initialized) {
         return ESP_OK;
@@ -178,73 +197,73 @@ esp_err_t initialize()
 
     bus = i2c_bus_create(I2C_NUM_0, &i2c_config);
     if (bus == nullptr) {
-        return ESP_FAIL;
+        return VEHICLE_ERROR(error, ESP_FAIL, imu_bus, application, 0);
     }
 
     device = i2c_bus_device_create(bus, config::kBmi160Address, 0U);
     if (device == nullptr) {
-        return ESP_FAIL;
+        return VEHICLE_ERROR(error, ESP_FAIL, imu_device, application, 0);
     }
 
     std::uint8_t value = 0U;
-    esp_err_t result = readRegister(kRegChipId, &value);
+    esp_err_t result = readRegister(kRegChipId, &value, error);
     if (result != ESP_OK || value != kChipId) {
-        return result == ESP_OK ? ESP_ERR_NOT_FOUND : result;
+        return result != ESP_OK ? result : VEHICLE_ERROR(error, ESP_ERR_NOT_FOUND, imu_id, application, 0, value, kChipId, -1, 3);
     }
 
-    result = writeRegister(kRegCmd, kCmdSoftReset);
+    result = writeRegister(kRegCmd, kCmdSoftReset, error);
     if (result != ESP_OK) {
         return result;
     }
     vTaskDelay(pdMS_TO_TICKS(5U));
 
-    result = writeRegister(kRegCmd, kCmdAccelNormal);
+    result = writeRegister(kRegCmd, kCmdAccelNormal, error);
     if (result != ESP_OK) {
         return result;
     }
     vTaskDelay(pdMS_TO_TICKS(10U));
 
-    result = writeRegister(kRegCmd, kCmdGyroNormal);
+    result = writeRegister(kRegCmd, kCmdGyroNormal, error);
     if (result != ESP_OK) {
         return result;
     }
     vTaskDelay(pdMS_TO_TICKS(100U));
 
-    result = waitForPmuNormal();
+    result = waitForPmuNormal(error);
     if (result != ESP_OK) {
         return result;
     }
 
     // 量程保持参考实现的±2g和±1000dps，数据更新率保持1600Hz。
     // 只替换ODR低四位，保留配置寄存器中的滤波带宽位。
-    result = writeRegister(kRegAccelRange, kAccelRange2G);
+    result = writeRegister(kRegAccelRange, kAccelRange2G, error);
     if (result != ESP_OK) {
         return result;
     }
-    result = readRegister(kRegAccelConf, &value);
-    if (result != ESP_OK) {
-        return result;
-    }
-    value = static_cast<std::uint8_t>((value & ~kOdrMask) | kOdr1600Hz);
-    result = writeRegister(kRegAccelConf, value);
-    if (result != ESP_OK) {
-        return result;
-    }
-    result = writeRegister(kRegGyroRange, kGyroRange1000Dps);
-    if (result != ESP_OK) {
-        return result;
-    }
-    result = readRegister(kRegGyroConf, &value);
+    result = readRegister(kRegAccelConf, &value, error);
     if (result != ESP_OK) {
         return result;
     }
     value = static_cast<std::uint8_t>((value & ~kOdrMask) | kOdr1600Hz);
-    result = writeRegister(kRegGyroConf, value);
+    result = writeRegister(kRegAccelConf, value, error);
+    if (result != ESP_OK) {
+        return result;
+    }
+    result = writeRegister(kRegGyroRange, kGyroRange1000Dps, error);
+    if (result != ESP_OK) {
+        return result;
+    }
+    result = readRegister(kRegGyroConf, &value, error);
+    if (result != ESP_OK) {
+        return result;
+    }
+    value = static_cast<std::uint8_t>((value & ~kOdrMask) | kOdr1600Hz);
+    result = writeRegister(kRegGyroConf, value, error);
     if (result != ESP_OK) {
         return result;
     }
 
-    result = calibrateGyroOffset();
+    result = calibrateGyroOffset(error);
     if (result != ESP_OK) {
         return result;
     }
@@ -263,17 +282,16 @@ void resetEstimator()
     previous_sample_us = esp_timer_get_time();
 }
 
-AttitudeSample readAttitude()
+esp_err_t readAttitude(AttitudeSample *out, ErrorInfo *error)
 {
-    if (!initialized) {
-        return AttitudeSample{0.0f, 0.0f, false};
-    }
+    if (!out || !initialized) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, imu_state, application, 0); }
+    *out = {};
 
     // raw按陀螺仪Y轴、加速度计X/Y/Z轴的连续寄存器布局保存一帧数据。
     std::uint8_t raw[12]{};
-    const esp_err_t result = readRegisters(kRegGyroData, raw, sizeof(raw));
+    const esp_err_t result = readRegisters(kRegGyroData, raw, sizeof(raw), error);
     if (result != ESP_OK) {
-        return AttitudeSample{last_pitch_deg, 0.0f, false};
+        return result;
     }
 
     // 传感器原始计数按配置量程换算为g和deg/s。
@@ -301,13 +319,15 @@ AttitudeSample readAttitude()
     }
 
     // 陀螺仪积分提供短期响应，加速度计角度修正长期漂移。
-    last_pitch_deg =
+    const float next_pitch_deg =
         kComplementaryGyroWeight *
             (last_pitch_deg + gyro_y_deg_s * interval_s) +
         kComplementaryAccelWeight * accelerometer_pitch_deg;
+    if (!std::isfinite(next_pitch_deg) || !std::isfinite(gyro_y_deg_s)) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, imu_filter, application, 0, next_pitch_deg, 0, -1, 1); }
+    last_pitch_deg = next_pitch_deg;
     previous_sample_us = now_us;
-
-    return AttitudeSample{last_pitch_deg, gyro_y_deg_s, std::isfinite(last_pitch_deg)};
+    *out = {last_pitch_deg, gyro_y_deg_s, true};
+    return ESP_OK;
 }
 
 } // namespace imu

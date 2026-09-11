@@ -1,8 +1,8 @@
 #pragma once
 
 #include <cstdint>
-#include "esp_err.h"
-#include "remote_protocol.hpp"
+#include "error_info.hpp"
+#include "remote_control.hpp"
 
 namespace vehicle::ble {
 
@@ -29,7 +29,8 @@ struct StatusSnapshot {
     bool sensors_valid{};
 };
 
-esp_err_t initialize();
+esp_err_t initialize(ErrorInfo *error=nullptr);
+void allowControl();
 // 仅由ControlTask调用：消费请求、判断超时并返回本周期有效命令。
 CommandSnapshot latestCommand();
 // 仅复制固定状态，通知由NimBLE主机发送。故障码：1初始化、2传感器、3定时器。

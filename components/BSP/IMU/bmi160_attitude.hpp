@@ -1,6 +1,6 @@
 #pragma once
 
-#include "esp_err.h"
+#include "error_info.hpp"
 
 namespace vehicle {
 namespace imu {
@@ -20,13 +20,13 @@ struct AttitudeSample {
 };
 
 // initialize()创建或复用I2C0，配置BMI160并完成陀螺仪硬件偏置校准。
-esp_err_t initialize();
+esp_err_t initialize(ErrorInfo *error=nullptr);
 
 // resetEstimator()把滤波角度清零，并从当前时刻重新开始积分计时。
 void resetEstimator();
 
 // readAttitude()读取一帧陀螺仪和加速度计数据并返回互补滤波结果。
-AttitudeSample readAttitude();
+esp_err_t readAttitude(AttitudeSample *out, ErrorInfo *error=nullptr);
 
 
 } // namespace imu

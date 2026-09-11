@@ -1,4 +1,4 @@
-#include "remote_protocol.hpp"
+#include "remote_control.hpp"
 
 // 构建期执行真实解析器和状态机；不生成测试任务，不访问硬件。
 namespace vehicle::ble {
@@ -10,7 +10,7 @@ constexpr bool valid(std::string_view text, bool legacy = false)
 }
 static_assert(valid("D,65535,-100,100"));
 static_assert(valid("A,0") && valid("S,12") && valid("E,12"));
-static_assert(valid("100,-100\n", true));
+static_assert(!valid("100,-100\n", true));
 static_assert(!valid("") && !valid("D,1,101,0") && !valid("D,-1,0,0"));
 static_assert(!valid("D,65536,0,0") && !valid("D,999999999999,0,0"));
 static_assert(!valid("D,1,0,0,1") && !valid("D,1,,0") && !valid("A,1,0"));
@@ -23,6 +23,7 @@ static_assert(!newerSequence(4, 5) && !newerSequence(32768, 0));
 constexpr RemoteState armed()
 {
     RemoteState state{};
+    state.boot_complete=true; state.run_allowed=true;
     remoteConnection(state, true);
     stepRemote(state, 0);
     acceptCommand(state, {'D', 1, 0, 0, false}, 1);

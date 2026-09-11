@@ -1,7 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
-#include "esp_err.h"
+#include "error_info.hpp"
 namespace vehicle::motor::current_sense {
 struct PhaseCurrents { float a; float b; float c; }; // A
 struct Sample {
@@ -10,7 +10,7 @@ struct Sample {
     bool valid;
 };
 // ControlTask独占；仅公共使能关闭且无相电流时允许零偏校准。
-esp_err_t initialize();
-Sample read();
+esp_err_t initialize(ErrorInfo *error=nullptr);
+esp_err_t read(Sample *out, ErrorInfo *error=nullptr);
 void release();
 } // namespace vehicle::motor::current_sense
