@@ -14,15 +14,6 @@ void boot(BootStep step, const char *state, esp_err_t rc)
 }
 void record(const ErrorInfo &error, bool fatal)
 { portENTER_CRITICAL(&lock); commit(g_diag_crash,error,fatal); portEXIT_CRITICAL(&lock); }
-void bleError(const ErrorInfo &error)
-{ portENTER_CRITICAL(&lock); g_diag_crash.last_ble_error=error; portEXIT_CRITICAL(&lock); }
-void bleState(bool connected, bool status, bool diag, std::uint16_t mtu)
-{
-    portENTER_CRITICAL(&lock);
-    g_diag_crash.connected=connected; g_diag_crash.status_subscribed=status;
-    g_diag_crash.diag_subscribed=diag; g_diag_crash.mtu=mtu;
-    portEXIT_CRITICAL(&lock);
-}
 void controlSnapshot(const ControlSnapshot &s)
 { portENTER_CRITICAL(&lock); g_diag_crash.last_control=s; portEXIT_CRITICAL(&lock); }
 void completeBoot()
@@ -88,9 +79,6 @@ void observeControlStart()
         if (first_loop.cycle != 0 && !reported_loop) {
             ESP_LOGI("control_diag","CONTROL_LOOP_ALIVE first frame completed; first dt is nominal, not measured");
             printTiming(first_loop);
-            if (!fault && first_balance.cycle == 0) {
-                ESP_LOGI("control_diag","CONTROL_STOPPED balance output disabled by stop event; ARM required to resume");
-            }
             reported_loop=true;
         }
         if (first_balance.cycle != 0) {
@@ -102,8 +90,4 @@ void observeControlStart()
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
-bool replay(const ReplayCursor &cursor, Event &event, bool &first)
-{ portENTER_CRITICAL(&lock); bool found=prepareReplay(g_diag_crash,cursor,event,first); portEXIT_CRITICAL(&lock); return found; }
-void metadata(std::uint8_t (&packet)[20])
-{ portENTER_CRITICAL(&lock); encodeMetadata(g_diag_crash,packet); portEXIT_CRITICAL(&lock); }
 }

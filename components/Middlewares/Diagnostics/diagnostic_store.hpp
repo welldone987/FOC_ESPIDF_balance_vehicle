@@ -14,15 +14,13 @@ struct ControlSnapshot {
 };
 struct Event { std::uint32_t event_seq{}; ErrorInfo error{}; std::uint8_t flags{}; };
 struct CrashState {
-    std::uint32_t schema{3}; // RAM布局版本；BLE schema保持1。
+    std::uint32_t schema{4}; // RAM布局版本，使用匹配ELF解码。
     BootStep boot_step{};
     std::uint32_t event_seq{};
     Event first_fault{};
     Event events[16]{};
     std::uint8_t count{}, next{};
-    ErrorInfo last_ble_error{};
-    std::uint16_t mtu{23};
-    bool connected{}, status_subscribed{}, diag_subscribed{}, boot_complete{};
+    bool boot_complete{};
     ControlSnapshot last_control{}, fault_control{};
     ControlTiming last_timing{}, fault_timing{}, first_loop{}, first_balance{};
 };
@@ -45,39 +43,11 @@ inline void commitTiming(CrashState &s, const ControlTiming &timing)
 }
 inline bool nextEvent(const CrashState &s, std::uint32_t after, Event &out)
 {
-    // First fault is replayed separately by the transport, history stays ordered.
+    // RAM历史按提交顺序遍历，首故障另有独立槽。
     for (unsigned n=0; n<s.count; ++n) {
         const auto &event = s.events[(s.next + 16 - s.count + n) % 16];
         if (event.event_seq > after) { out = event; return true; }
     }
     return false;
-}
-struct ReplayCursor { std::uint32_t after{}; bool first_sent{}; };
-inline bool prepareReplay(const CrashState &s, const ReplayCursor &cursor, Event &out, bool &first)
-{
-    first=!cursor.first_sent && s.first_fault.event_seq != 0;
-    if (first) { out=s.first_fault; return true; }
-    return nextEvent(s,cursor.after,out);
-}
-inline void acceptReplay(ReplayCursor &cursor, const Event &event, bool first, bool submitted)
-{
-    if (!submitted) { return; }
-    if (first) { cursor.first_sent=true; } else { cursor.after=event.event_seq; }
-}
-inline void putLe(std::uint8_t *p, std::uint32_t v, unsigned count)
-{ for (unsigned i=0; i<count; ++i) { p[i] = static_cast<std::uint8_t>(v >> (8*i)); } }
-inline void encodeEvent(const Event &e, std::uint8_t (&p)[14])
-{
-    p[0]=1; putLe(p+1, static_cast<std::uint16_t>(e.error.point_id), 2);
-    putLe(p+3,e.event_seq,4); p[7]=static_cast<std::uint8_t>(e.error.domain);
-    p[8]=e.flags; putLe(p+9,static_cast<std::uint32_t>(e.error.raw_code),4);
-    p[13]=static_cast<std::uint8_t>(e.error.channel);
-}
-inline void encodeMetadata(const CrashState &s, std::uint8_t (&p)[20])
-{
-    p[0]=1; p[1]=(s.boot_complete ? 1:0) | (s.first_fault.event_seq ? 2:0);
-    putLe(p+2,static_cast<std::uint16_t>(s.boot_step),2); putLe(p+4,s.event_seq,4);
-    putLe(p+8,s.first_fault.event_seq,4); putLe(p+12,static_cast<std::uint16_t>(s.first_fault.error.point_id),2);
-    p[14]=s.count; p[15]=16; putLe(p+16,s.mtu,2); p[18]=s.connected; p[19]=s.diag_subscribed;
 }
 }

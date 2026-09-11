@@ -6,17 +6,10 @@
 
 namespace vehicle::ble {
 
-inline constexpr std::int64_t kCommandTimeoutUs = 300000;
-enum class RemoteMode : std::uint8_t {
-    boot, idle, active, timeout, disconnected, emergency, fault, stopped
-};
-
 struct RemoteCommand {
-    char kind{'D'};
     std::uint16_t sequence{};
     std::int16_t steering{};
     std::int16_t throttle{};
-    bool legacy{};
 };
 
 constexpr bool readInteger(std::string_view text, std::size_t &offset,
@@ -48,25 +41,20 @@ constexpr bool comma(std::string_view text, std::size_t &offset)
     return offset < text.size() && text[offset++] == ',';
 }
 
-constexpr bool parseCommand(std::string_view text, bool legacy, RemoteCommand &out)
+constexpr bool parseCommand(std::string_view text, RemoteCommand &out)
 {
     RemoteCommand parsed{};
-    parsed.legacy = legacy;
     std::size_t offset = 0;
     int steering = 0;
     int throttle = 0;
-    if (legacy) { return false; }
     if (text.size() < 3 || text.size() > 20) { return false; }
-    parsed.kind = text[offset++];
-    if (parsed.kind != 'D' && parsed.kind != 'A' &&
-        parsed.kind != 'S' && parsed.kind != 'E') { return false; }
+    if (text[offset++] != 'D') { return false; }
     int sequence = 0;
     if (!comma(text, offset) || offset == text.size() || text[offset] == '-' ||
         !readInteger(text, offset, 65535, sequence)) { return false; }
     parsed.sequence = static_cast<std::uint16_t>(sequence);
-    if (parsed.kind == 'D' &&
-        (!comma(text, offset) || !readInteger(text, offset, 100, steering) ||
-         !comma(text, offset) || !readInteger(text, offset, 100, throttle))) {
+    if (!comma(text, offset) || !readInteger(text, offset, 100, steering) ||
+         !comma(text, offset) || !readInteger(text, offset, 100, throttle)) {
         return false;
     }
     if (offset != text.size()) { return false; }

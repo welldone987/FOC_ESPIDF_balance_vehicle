@@ -15,9 +15,9 @@ enum class ErrorPoint : std::uint16_t {
     imu_bus=0x400, imu_device, imu_read, imu_write, imu_id, imu_pmu_timeout, imu_foc_timeout, imu_state, imu_filter,
     imu_soft_reset, imu_accel_normal, imu_gyro_normal, imu_accel_range, imu_accel_conf,
     imu_gyro_range, imu_gyro_conf, imu_foc_config, imu_foc_start, imu_foc_offset,
-    control_gap=0x500, attitude_gap, fall, control_output, control_timer, emergency,
-    ble_init=0x600, ble_name, ble_count, ble_services, ble_callout, ble_address,
-    ble_adv_fields, ble_scan_fields, ble_advertise, ble_ready_timeout, ble_reset, ble_notify, ble_diag_notify,
+    control_gap=0x500, attitude_gap, fall, control_output, control_timer,
+    ble_init=0x600, ble_name, ble_count, ble_services, ble_address=0x605,
+    ble_adv_fields, ble_scan_fields, ble_advertise, ble_ready_timeout, ble_reset,
     wifi_init=0x700
 };
 struct ErrorInfo {

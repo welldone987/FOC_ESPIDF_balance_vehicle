@@ -1,3 +1,5 @@
+> 当前BLE仅输出速度/方向；旧ARM、状态及DIAG相关内容不再适用。当前实现与验收见[BLE任务拆分](./tasks/ble_motion_task.md)。
+
 # 独立平衡启动与串口排查
 
 本文描述feature分支当前源码，验证产物基于80b777e之后的修复构建。初始化完成后，ControlTask以零速度/零偏航目标开始平衡，不等待BLE连接或ARM。BLE ARM只授权速度和转向目标。

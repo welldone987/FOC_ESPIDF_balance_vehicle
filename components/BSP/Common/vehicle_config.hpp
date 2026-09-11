@@ -22,16 +22,9 @@ inline constexpr bool kWifiTcpDebugEnabled = true;
 // BLE字符串和缩放常量保持网页控制端的整数协议不变。
 inline constexpr char kBleDeviceName[] = "平衡车";
 inline constexpr char kBleServiceUuid[] = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
-inline constexpr char kBleCommandUuid[] = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
-inline constexpr char kBleInitialValue[] = "欢迎来到平衡车";
-inline constexpr std::size_t kMaximumBleCommandLength = 63U;
+inline constexpr char kBleCommandUuid[] = "6e400006-b5a3-f393-e0a9-e50e24dcca9e";
 inline constexpr float kMaximumThrottleVelocityRadS = 10.0f;
-inline constexpr float kMaximumSteeringVoltageV = 10.0f;
-inline constexpr float kBleFullScaleSteering = 1500.0f;
-inline constexpr float kBleFullScaleThrottle = 40.0f;
-// 新协议100%转向保持原网页X=100的实际差分电压，避免放大15倍。
-inline constexpr float kRemoteSteeringVoltageV =
-    kMaximumSteeringVoltageV * 100.0f / kBleFullScaleSteering;
+
 
 // BMI160通过I2C0读取；原始加速度和陀螺仪计数分别按这里的量程因子换算。
 inline constexpr std::uint8_t kBmi160Address = 0x69U;

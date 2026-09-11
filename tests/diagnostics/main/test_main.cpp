@@ -1,6 +1,6 @@
 #include "unity.h"
 #include "diagnostic_store.hpp"
-#include "ble_status_codec.hpp"
+#include "motion_command.hpp"
 #include "balance_controller.hpp"
 #include "remote_protocol_checks.cpp"
 #include "../../../components/BSP/Motor/current_sense.cpp"
@@ -32,28 +32,6 @@ void errorsAndRing()
     TEST_ASSERT_EQUAL(91,s.fault_control.sequence);
     diagnostics::Event event{};TEST_ASSERT_TRUE(diagnostics::nextEvent(s,0,event));TEST_ASSERT_EQUAL(26,event.event_seq);
     TEST_ASSERT_FALSE(diagnostics::nextEvent(s,41,event));
-}
-void wirePackets()
-{
-    diagnostics::Event e{}; e.event_seq=0x12345678; e.error.point_id=ErrorPoint::current_raw;
-    e.error.raw_code=-123; e.error.domain=ErrorDomain::esp;e.error.channel=3;e.flags=3;
-    std::uint8_t p[14]{};diagnostics::encodeEvent(e,p);
-    const std::uint8_t expected[14]={1,4,2,0x78,0x56,0x34,0x12,1,3,0x85,0xff,0xff,0xff,3};
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected,p,14);
-    diagnostics::CrashState s{};s.boot_complete=true;s.event_seq=0x12345678;s.count=16;s.mtu=247;
-    std::uint8_t m[20]{};diagnostics::encodeMetadata(s,m);
-    TEST_ASSERT_EQUAL(1,m[0]);TEST_ASSERT_EQUAL(1,m[1]);TEST_ASSERT_EQUAL(0x78,m[4]);TEST_ASSERT_EQUAL(247,m[16]);TEST_ASSERT_EQUAL(16,m[14]);
-}
-void gates()
-{
-    ble::RemoteState s{};ble::remoteConnection(s,true);ble::stepRemote(s,0);
-    TEST_ASSERT_TRUE(ble::acceptCommand(s,{'D',1,0,0,false},1));ble::stepRemote(s,1);
-    TEST_ASSERT_FALSE(ble::acceptCommand(s,{'A',2,0,0,false},2));
-    s.boot_complete=s.run_allowed=true;ble::stepRemote(s,3);TEST_ASSERT_NOT_EQUAL(static_cast<int>(ble::RemoteMode::active),static_cast<int>(s.mode));
-    TEST_ASSERT_TRUE(ble::acceptCommand(s,{'A',3,0,0,false},4));ble::stepRemote(s,4);TEST_ASSERT_EQUAL(static_cast<int>(ble::RemoteMode::active),static_cast<int>(s.mode));
-    s.fault=true;ble::remoteConnection(s,false);ble::remoteConnection(s,true);ble::stepRemote(s,5);
-    TEST_ASSERT_TRUE(s.fault);TEST_ASSERT_FALSE(ble::acceptCommand(s,{'A',4,0,0,false},6));
-    ble::RemoteCommand command{};TEST_ASSERT_FALSE(ble::parseCommand("0,0",true,command));
 }
 void adcInitializationFailures()
 {
@@ -112,35 +90,6 @@ void failedSamplesDoNotCommit()
     fake::now+=1000;fake::i2c_error=ESP_ERR_TIMEOUT;TEST_ASSERT_EQUAL(ESP_ERR_TIMEOUT,motor::readWheelState(&wheel,&e));TEST_ASSERT_EQUAL(encoder_time,motor::previous_encoder_us);
     fake::now+=1000;fake::i2c_error=ESP_OK;
     TEST_ASSERT_EQUAL(ESP_ERR_TIMEOUT,motor::readWheelState(&wheel,&e));
-}
-void replayRetriesAndReconnect()
-{
-    diagnostics::CrashState s{};
-    diagnostics::commit(s,{},false);diagnostics::commit(s,{},true);
-    for(int i=0;i<20;++i) { diagnostics::commit(s,{},false); }
-    diagnostics::ReplayCursor c{};diagnostics::Event e{};bool first{};
-    TEST_ASSERT_TRUE(diagnostics::prepareReplay(s,c,e,first));TEST_ASSERT_TRUE(first);TEST_ASSERT_EQUAL(2,e.event_seq);
-    diagnostics::acceptReplay(c,e,first,false);
-    TEST_ASSERT_TRUE(diagnostics::prepareReplay(s,c,e,first));TEST_ASSERT_EQUAL(2,e.event_seq);
-    diagnostics::acceptReplay(c,e,first,true);
-    TEST_ASSERT_TRUE(diagnostics::prepareReplay(s,c,e,first));TEST_ASSERT_FALSE(first);TEST_ASSERT_EQUAL(7,e.event_seq);
-    diagnostics::acceptReplay(c,e,first,false);TEST_ASSERT_EQUAL(0,c.after);
-    diagnostics::acceptReplay(c,e,first,true);TEST_ASSERT_EQUAL(7,c.after);
-    c={};TEST_ASSERT_TRUE(diagnostics::prepareReplay(s,c,e,first));TEST_ASSERT_EQUAL(2,e.event_seq);TEST_ASSERT_EQUAL(16,s.count);
-}
-void statusCompatibility()
-{
-    ble::StatusSnapshot status{};ble::RemoteState remote{};
-    remote.connected=true;remote.has_command=true;remote.received_us=1000;
-    status.command.connection_epoch=7;status.command.sequence=0x1234;status.command.sequence_valid=true;
-    status.command.mode=ble::RemoteMode::active;status.sampled_us=1000;status.sensors_valid=true;
-    status.pitch_deg=1.25f;status.left_velocity_rad_s=-2.5f;status.right_velocity_rad_s=3.0f;status.sample_sequence=0xabcd;
-    std::uint8_t p[20]{};ble::encodeStatusPacket(p,status,remote,7,2000);
-    TEST_ASSERT_EQUAL(2,p[0]);TEST_ASSERT_EQUAL(0x34,p[4]);TEST_ASSERT_EQUAL(0x12,p[5]);
-    TEST_ASSERT_EQUAL(125,p[8]);TEST_ASSERT_EQUAL(0x06,p[10]);TEST_ASSERT_EQUAL(0xff,p[11]);TEST_ASSERT_EQUAL(0xcd,p[18]);
-    status.pitch_deg=std::bit_cast<float>(0x7fc00000U);ble::encodeStatusPacket(p,status,remote,7,2000);
-    TEST_ASSERT_EQUAL(0,p[2]&4);TEST_ASSERT_EQUAL(0,p[8]);
-    ble::encodeStatusPacket(p,status,remote,8,2000);TEST_ASSERT_EQUAL(0,p[4]);TEST_ASSERT_EQUAL(0,p[2]&8);
 }
 void outputAgeStages()
 {
@@ -251,11 +200,8 @@ void timingSnapshotsAndFirstRelease()
     diagnostics::commit(s,{},true);
     TEST_ASSERT_EQUAL(22,s.fault_timing.cycle);TEST_ASSERT_EQUAL(23,s.first_balance.cycle);
 }
-void independentBalanceWithoutArm()
+void independentBalanceWithoutMotion()
 {
-    ble::RemoteState remote{};ble::stepRemote(remote,1000);
-    control::BalanceEnableState enable{};
-    TEST_ASSERT_TRUE(control::stepBalanceEnable(enable,false,remote.stop_generation));
     control::ControllerState controller{},reference{};
     control::ControlInput input{0,0,config::kPitchOffsetRad+0.02f,0,1.0f,0.2f,true,false};
     auto centered=input;centered.throttle_velocity_rad_s=0;centered.yaw_rate_rad_s=0;
@@ -271,7 +217,7 @@ void independentBalanceWithoutArm()
     TEST_ASSERT_EQUAL_FLOAT(0,controller.yaw_reference_rad_s);
     input.pitch_rad=config::kPitchOffsetRad;input.left_velocity_rad_s=input.right_velocity_rad_s=1;
     for(int n=0;n<6;++n)output=control::update(controller,input,0.002f);
-    TEST_ASSERT_TRUE(output.target_pitch_rad<config::kPitchOffsetRad); // 未ARM时速度环仍在纠偏。
+    TEST_ASSERT_TRUE(output.target_pitch_rad<config::kPitchOffsetRad); // 目标无效时速度环仍在纠偏。
     input.balancing=false;output=control::update(controller,input,0.002f);
     TEST_ASSERT_TRUE(output.valid);TEST_ASSERT_EQUAL_FLOAT(0,output.left_target_a);
     TEST_ASSERT_EQUAL_FLOAT(0,output.right_target_a);TEST_ASSERT_EQUAL_FLOAT(0,controller.outer_elapsed_s);
@@ -288,38 +234,6 @@ void independentBalanceCurrentPath()
     TEST_ASSERT_EQUAL(ESP_OK,motor::runCurrentControl({output.left_target_a,output.right_target_a},&feedback,&error,&timing));
     TEST_ASSERT_TRUE(feedback.valid);TEST_ASSERT_EQUAL(enables+1,fake::enable_calls);
     TEST_ASSERT_EQUAL(static_cast<int>(CurrentStage::complete),static_cast<int>(timing.stage));
-}
-void balanceStopRequiresNewArm()
-{
-    ble::RemoteState remote{};remote.boot_complete=remote.run_allowed=true;
-    control::BalanceEnableState enable{};
-    ble::remoteConnection(remote,true);ble::stepRemote(remote,0);
-    TEST_ASSERT_TRUE(control::stepBalanceEnable(enable,false,remote.stop_generation));
-    TEST_ASSERT_TRUE(ble::acceptCommand(remote,{'S',1,0,0,false},1));
-    TEST_ASSERT_TRUE(ble::acceptCommand(remote,{'D',2,0,0,false},2));
-    ble::stepRemote(remote,2);
-    TEST_ASSERT_FALSE(control::stepBalanceEnable(enable,false,remote.stop_generation));
-    ble::remoteConnection(remote,false);ble::remoteConnection(remote,true);ble::stepRemote(remote,3);
-    TEST_ASSERT_FALSE(control::stepBalanceEnable(enable,false,remote.stop_generation));
-    TEST_ASSERT_TRUE(ble::acceptCommand(remote,{'D',1,0,0,false},4));ble::stepRemote(remote,4);
-    TEST_ASSERT_FALSE(control::stepBalanceEnable(enable,false,remote.stop_generation));
-    TEST_ASSERT_TRUE(ble::acceptCommand(remote,{'A',2,0,0,false},5));ble::stepRemote(remote,5);
-    TEST_ASSERT_EQUAL(static_cast<int>(ble::RemoteMode::active),static_cast<int>(remote.mode));
-    TEST_ASSERT_TRUE(control::stepBalanceEnable(enable,true,remote.stop_generation));
-    ble::stepRemote(remote,300005);
-    TEST_ASSERT_FALSE(control::stepBalanceEnable(enable,false,remote.stop_generation));
-    const auto stopped_at=remote.stop_generation;ble::stepRemote(remote,300006);
-    TEST_ASSERT_EQUAL(stopped_at,remote.stop_generation);
-}
-void balanceStopSurvivesUnobservedReconnect()
-{
-    auto remote=ble::armed();control::BalanceEnableState enable{};
-    TEST_ASSERT_TRUE(control::stepBalanceEnable(enable,true,remote.stop_generation));
-    ble::remoteConnection(remote,false);ble::remoteConnection(remote,true);ble::stepRemote(remote,10);
-    TEST_ASSERT_FALSE(control::stepBalanceEnable(enable,false,remote.stop_generation));
-    remote=ble::armed();enable={};
-    TEST_ASSERT_TRUE(ble::acceptCommand(remote,{'D',3,0,0,false},300002));ble::stepRemote(remote,300002);
-    TEST_ASSERT_FALSE(control::stepBalanceEnable(enable,false,remote.stop_generation));
 }
 void firstAttitudeUsesMeasuredTilt()
 {
@@ -406,16 +320,26 @@ void reversedVehicleDirectionKeepsFeedbackConsistent()
         TEST_ASSERT_TRUE(feedback.right.uq_applied_v*direction>0);
     }
 }
+void motionFreshness()
+{
+    const control::MotionCommand command{1,0.5f,1000,true};
+    TEST_ASSERT_TRUE(control::freshCommand(command,300999,1000));
+    TEST_ASSERT_FALSE(control::freshCommand(command,301000,1000));
+    TEST_ASSERT_FALSE(control::freshCommand(command,1001,1001));
+    TEST_ASSERT_FALSE(control::freshCommand(command,999,0));
+    TEST_ASSERT_FALSE(control::freshCommand({},1001,0));
+}
 extern "C" void app_main()
 {
     UNITY_BEGIN();
-    RUN_TEST(statusCompatibility);RUN_TEST(replayRetriesAndReconnect);RUN_TEST(errorsAndRing);RUN_TEST(wirePackets);RUN_TEST(gates);
+    RUN_TEST(motionFreshness);
+    RUN_TEST(errorsAndRing);
     RUN_TEST(adcInitializationFailures);RUN_TEST(adcRuntimeFailures);RUN_TEST(offsets);
     RUN_TEST(motorFailures);RUN_TEST(failedSamplesDoNotCommit);
     RUN_TEST(outputAgeStages);RUN_TEST(outputAgeBoundary);RUN_TEST(timingSnapshotsAndFirstRelease);
     RUN_TEST(currentOutputAgeStages);RUN_TEST(currentOutputAgeBoundary);RUN_TEST(readBudgetsRemainTwoMilliseconds);
-    RUN_TEST(independentBalanceWithoutArm);RUN_TEST(independentBalanceCurrentPath);
-    RUN_TEST(balanceStopRequiresNewArm);RUN_TEST(balanceStopSurvivesUnobservedReconnect);RUN_TEST(firstAttitudeUsesMeasuredTilt);
+    RUN_TEST(independentBalanceWithoutMotion);RUN_TEST(independentBalanceCurrentPath);
+    RUN_TEST(firstAttitudeUsesMeasuredTilt);
     RUN_TEST(attitudeFilterUsesActualInterval);RUN_TEST(outerLoopAtTwoHundredHzAttitude);RUN_TEST(imuConfiguresBothSensorsAtEightHundredHz);
     RUN_TEST(reversedVehicleDirectionKeepsFeedbackConsistent);
     if (UNITY_END()==0) { puts("DIAGNOSTICS_TESTS_PASS"); }

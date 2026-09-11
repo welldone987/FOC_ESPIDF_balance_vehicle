@@ -68,13 +68,13 @@ p g_diag_crash.last_timing
 p g_diag_crash.first_loop
 p g_diag_crash.first_balance
 p g_diag_crash.events
-p g_diag_crash.last_ble_error
+p g_diag_crash.events
 quit
 ```
 
 优先读first_fault而不是事件环最后一项，后者可能只是次级错误。fault_control是首次致命错误时复制的最后有效控制快照；如果第一轮尚未完成，其valid可能为false、sequence为0。value/threshold/channel分别由valid_fields的bit0/1/2决定是否有意义。浮点现场没有有效位时不能把默认0当实测。
 
-RAM schema=3的fault_timing记录失败当轮阶段和耗时，first_loop/first_balance分别保留首次完整采样周期/平衡周期；其cycle=0表示尚未记录。balancing与driving分别标记平衡使能和遥控授权。计时单位为us，未执行阶段的默认0不表示实测耗时为零。旧固件的匹配ELF可能没有这些字段，不应使用新版ELF解释旧dump。
+RAM schema=4的fault_timing记录失败当轮阶段和耗时，first_loop/first_balance分别保留首次完整采样周期/平衡周期；其cycle=0表示尚未记录。balancing与driving分别标记平衡使能和遥控目标有效。计时单位为us，未执行阶段的默认0不表示实测耗时为零。旧固件的匹配ELF可能没有这些字段，不应使用新版ELF解释旧dump。
 
 当前仅显式收录g_diag_crash及SDK选择的任务现场，CONFIG_ESP_COREDUMP_CAPTURE_DRAM未开启，不能假设全部堆/全局内存都在dump中。NO_OVERWRITE开启时旧dump可能来自更早的故障；必须核对来源，提取并确认后再单独安排清理。本说明不执行或提供自动擦除流程。
 

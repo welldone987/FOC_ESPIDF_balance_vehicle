@@ -1,5 +1,5 @@
 #include "application_tasks.hpp"
-#include "ble_command_service.hpp"
+#include "motion_command.hpp"
 #include "diagnostics.hpp"
 #include "motor_foc_service.hpp"
 #include "power_monitor.hpp"
@@ -12,6 +12,11 @@
 
 namespace {
 using namespace vehicle;
+StaticTask_t ble_storage{};
+StackType_t ble_stack[freertos_tasks::kBleStackBytes]{};
+StaticQueue_t command_storage{}, ble_startup_storage{};
+std::uint8_t command_buffer[sizeof(control::MotionCommand)]{};
+std::uint8_t ble_startup_buffer[sizeof(freertos_tasks::BleStartup)]{};
 StaticTask_t control_storage{};
 StackType_t control_stack[freertos_tasks::kControlStackBytes]{};
 freertos_tasks::TaskContext context{};
@@ -29,7 +34,6 @@ bool finish(diagnostics::BootStep step, esp_err_t rc, const ErrorInfo &error, bo
     const auto off=motor::inhibitOutputs(&secondary);
     diagnostics::record(error,true);
     if (off != ESP_OK) { diagnostics::record(secondary); }
-    ble::publishFault(1);
     motor::disableOutputs();
     diagnostics::boot(step,"FAIL",rc);
     ESP_LOGE("boot","BOOT_SUMMARY FAIL point=%u raw=%ld at %s:%lu",static_cast<unsigned>(error.point_id),static_cast<long>(error.raw_code),error.file,static_cast<unsigned long>(error.line));
@@ -72,7 +76,21 @@ extern "C" void app_main(void)
         finish(BootStep::core_dump,rc,error,false);
     }
     diagnostics::boot(BootStep::ble,"BEGIN");
-    if (!finish(BootStep::ble,ble::initialize(&error),error)) { return; }
+    context.command_queue=xQueueCreateStatic(1,sizeof(control::MotionCommand),command_buffer,&command_storage);
+    context.ble_startup_queue=xQueueCreateStatic(1,sizeof(freertos_tasks::BleStartup),ble_startup_buffer,&ble_startup_storage);
+    if (!context.command_queue || !context.ble_startup_queue ||
+        !xTaskCreateStaticPinnedToCore(freertos_tasks::bleTask,"BleTask",freertos_tasks::kBleStackBytes,
+            &context,freertos_tasks::kBlePriority,ble_stack,&ble_storage,freertos_tasks::kServiceCore)) {
+        rc=VEHICLE_ERROR(&error,ESP_ERR_NO_MEM,boot_resource,application,0);
+        finish(BootStep::ble,rc,error);
+        return;
+    }
+    freertos_tasks::BleStartup startup{};
+    // BleTask完成首次广播后才放行控制初始化；结果也通过静态队列传递。
+    if (xQueueReceive(context.ble_startup_queue,&startup,pdMS_TO_TICKS(6000)) != pdTRUE) {
+        startup.result=VEHICLE_ERROR(&startup.error,ESP_ERR_TIMEOUT,ble_ready_timeout,application,0);
+    }
+    if (!finish(BootStep::ble,startup.result,startup.error)) { return; }
 #if CONFIG_VEHICLE_WIFI_ENABLED
     diagnostics::boot(BootStep::wifi,"BEGIN");
     rc=wifi_telemtry::initialize();

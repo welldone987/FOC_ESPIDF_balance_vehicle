@@ -1,3 +1,5 @@
+> 当前BLE仅输出速度/方向；旧ARM、状态及DIAG相关内容不再适用。当前实现与验收见[BLE任务拆分](./tasks/ble_motion_task.md)。
+
 # 初始化与诊断实施验收
 
 依据用户提供的 FOC_Diagnostics_BLE_Refactor_Condensed.md。

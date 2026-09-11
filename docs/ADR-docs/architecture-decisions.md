@@ -148,7 +148,7 @@ flowchart LR
 **当前依据与验证边界**
 
 - 依据：main/app_main.cpp、components/BSP/CMakeLists.txt、components/Middlewares/CMakeLists.txt，项目AGENTS.md。
-- 已核对：当前源码、配置与调用关系；当前固件通过ESP-IDF v6.0.2 Wi-Fi开/关构建；诊断测试见docs/codex/diagnostics_validation.md。
+- 已核对：当前源码、配置与调用关系；验证范围见docs/codex/tasks/ble_motion_task.md；旧诊断验证记录不代表当前固件。
 - 未确认 / 未验证：硬件实际行为、时限及故障恢复见[待验证项](./architecture.md#6-unknown--unverified)。
 
 ## 启动与硬件所有权
@@ -189,7 +189,7 @@ flowchart LR
 **当前依据与验证边界**
 
 - 依据：main/app_main.cpp、components/BSP/Power/power_monitor.cpp、components/BSP/Motor/motor_foc_service.cpp，项目AGENTS.md。
-- 已核对：当前源码、配置与调用关系；当前固件通过ESP-IDF v6.0.2 Wi-Fi开/关构建；诊断测试见docs/codex/diagnostics_validation.md。
+- 已核对：当前源码、配置与调用关系；验证范围见docs/codex/tasks/ble_motion_task.md；旧诊断验证记录不代表当前固件。
 - 未确认 / 未验证：硬件实际行为、时限及故障恢复见[待验证项](./architecture.md#6-unknown--unverified)。
 
 ## 控制调度与状态所有权
@@ -200,7 +200,7 @@ flowchart LR
 
 **当前决策**
 
-定时器只发送通知；ControlTask检查命令、到期IMU与倾倒，再读编码器、运行到期外环，随后采电流并以本周期目标执行Iq PI与SVPWM；姿态按5ms绝对截止点、速度及偏航累计10ms更新。ControlTask持有独立平衡使能，初始化完成后以零速/零偏航目标运行；BLE ARM只授权运动目标。首帧姿态直接以加速度计建立基准，倾倒检查先于首次电流输出。控制器使用函数和结构体；平衡电流优先分配，目标单位A。M0/M1的ForwardSign均为-1，按用户方向反馈同步反向目标电流与车辆轮速/Iq/Uq；FOC编码器对齐方向及相电流极性不随车辆映射改变，新的实板方向仍待验证。保留故障锁存停机。
+定时器只发送通知；ControlTask检查命令、到期IMU与倾倒，再读编码器、运行到期外环，随后采电流并以本周期目标执行Iq PI与SVPWM；姿态按5ms绝对截止点、速度及偏航累计10ms更新。ControlTask持有独立平衡使能，初始化完成后以零速/零偏航目标运行；BLE仅提交速度/偏航目标，ControlTask检查300ms时效；无命令、断连或过期时采用零目标并继续平衡。首帧姿态直接以加速度计建立基准，倾倒检查先于首次电流输出。控制器使用函数和结构体；平衡电流优先分配，目标单位A。M0/M1的ForwardSign均为-1，按用户方向反馈同步反向目标电流与车辆轮速/Iq/Uq；FOC编码器对齐方向及相电流极性不随车辆映射改变，新的实板方向仍待验证。保留故障锁存停机。
 
 **为什么这样设计**
 
@@ -231,7 +231,7 @@ flowchart LR
 **当前依据与验证边界**
 
 - 依据：components/Middlewares/FreeRTOS/application_tasks.cpp、application_tasks.hpp、components/BSP/Common/vehicle_config.hpp，项目AGENTS.md。
-- 已核对：当前源码、配置与调用关系；当前固件通过ESP-IDF v6.0.2 Wi-Fi开/关构建；诊断测试见docs/codex/diagnostics_validation.md。
+- 已核对：当前源码、配置与调用关系；验证范围见docs/codex/tasks/ble_motion_task.md；旧诊断验证记录不代表当前固件。
 - 未确认 / 未验证：硬件实际行为、时限及故障恢复见[待验证项](./architecture.md#6-unknown--unverified)。
 
 ## 通信与控制隔离
@@ -242,29 +242,30 @@ BLE、Wi-Fi和遥测
 
 **当前决策**
 
-BLE通过短portMUX临界区共享固定RemoteState：回调提交请求，控制任务执行授权、300 ms超时与停止决策。控制任务分别发布BLE最新StatusSnapshot和TCP长度1静态队列，二者源自同一控制周期。NimBLE主机100 ms callout发送20字节READ/NOTIFY状态；Wi-Fi非阻塞服务单客户端TCP，CONFIG_VEHICLE_WIFI_ENABLED关闭全部Wi-Fi专用资源；TCP bool是次级开关，凭据存本机sdkconfig。
+BleTask在Core0以优先级5运行，4096字节静态栈；初始化NimBLE后阻塞消费长度1原始报文队列。NimBLE回调只做GAP/GATT连接管理和报文复制；BleTask解析D命令、过滤重复/旧序号并转换为车辆速度/偏航rad/s。ControlTask通过第二个长度1静态队列接收MotionCommand，独立检查原始接收时刻，拒绝控制就绪前及满300ms的命令。
 
 **为什么这样设计**
 
-网络等待不进入控制链路；允许丢中间遥测帧，换取固定内存和最新状态。BLE轻量回报便于网页直接接入，TCP保留电脑调试用途。20字节适配默认MTU，通知失败丢弃本帧而不积压历史。独立停止/急停标记防止驾驶最新值覆盖安全事件。关闭TCP后仍可观察Wi-Fi连接日志。
+网络事件、解析及量纲转换不占控制周期；最新值覆盖避免旧驾驶目标积压，且控制仍能在BleTask饥饿时使目标过期。独立任务增加4096字节栈及TCB，实际余量需测量。无故障通知、错误编码器或BLE控制状态机，故障只由统一ErrorInfo链路维护。
 
 **成立条件 / 约束**
 
-- TCP v2保留原七列顺序并追加电流、Uq、相电流、周期和有效性共21列；保留.002 UUID但拒绝legacy驾驶；新网页用.004百分比D/A/S/E和.003状态，转向线上满量程保持原网页约±0.667的旧电压刻度，控制入口转换为±0.5 rad/s偏航目标。所有驾驶经v2；ARM同时要求boot_complete、run_allowed、无故障及急停，启动前请求不会延后自动生效。
-- 新网页20 Hz串行发送，只有车辆确认A后才允许非零D；初始未连接及首次连接待授权时，本地零速平衡持续运行。松手/失焦/后台发S并关闭公共使能；超时与断连停机后需重新授权。停止事件序号跨重连保留，后续D和快速重连不能恢复平衡输出。S停机不保持站立。E锁存关闭输出，无线急停不具有硬实时保证。A不改变启动initFOC可能驱动车轮的事实。
-- Wi-Fi/BLE共存使用WIFI_PS_MIN_MODEM；密码不进入ADR。通知使用NimBLE mbuf池，控制路径不分配和发送网络数据。
+- 主服务.001只保留.006 WRITE特征，内容为D,seq,steering,throttle；百分比均±100，seq为uint16。新UUID避免旧ARM网页误操作新固件；GATT成功仅表示原始报文入队。
+- 网页20Hz串行写入，松手/失焦/后台发零目标，200ms写入超时主动断连；断连和控制侧命令过期归零但继续平衡。无ARM、无线停止/急停命令或状态回报。
+- 连接epoch改变时清空解析序号，排队不刷新接收时刻；初始化通过静态BleStartup队列报告，main最多等待6秒才决定放行控制。
+- TCP v2仍为21列，50ms非阻塞服务；CONFIG_VEHICLE_WIFI_ENABLED控制专用任务和资源。Wi-Fi/BLE使用WIFI_PS_MIN_MODEM。凭据不写入ADR。
 
 **需要重新评估的情况**
 
-- 要求无损记录、多客户端或通信延迟超过可接受范围。
+- 要求保存每条命令/事件、状态确认、多客户端，或实测延迟/栈水位不满足要求。
 
 **当前局部架构**
 
 ```mermaid
 flowchart LR
-    BLE -->|"命令请求"| ControlTask
-    ControlTask -->|"状态快照"| BLE
-    BLE -->|"10 Hz Notify"| HTML
+    HTML --> NimBLE
+    NimBLE -->|Incoming队列| BleTask
+    BleTask -->|MotionCommand队列| ControlTask
     ControlTask --> Queue
     Queue --> TCP
 ```
@@ -277,7 +278,7 @@ flowchart LR
 **当前依据与验证边界**
 
 - 依据：components/Middlewares/BLE/ble_command_service.cpp、components/Middlewares/wifi_telemtry/wifi_telemtry.cpp、components/BSP/Common/vehicle_config.hpp，项目AGENTS.md。
-- 已核对：当前源码、配置与调用关系；当前固件通过ESP-IDF v6.0.2 Wi-Fi开/关构建；诊断测试见docs/codex/diagnostics_validation.md。
+- 已核对：当前源码、配置与调用关系；验证范围见docs/codex/tasks/ble_motion_task.md；旧诊断验证记录不代表当前固件。
 - 未确认 / 未验证：硬件实际行为、时限及故障恢复见[待验证项](./architecture.md#6-unknown--unverified)。
 
 
@@ -285,17 +286,17 @@ flowchart LR
 
 **范围**
 
-启动检查、BSP错误传播、ControlTask停机、BLE DIAG、Flash Core dump。
+启动检查、BSP错误传播、ControlTask停机、RAM事件及Flash Core dump。
 
 **当前决策**
 
-普通函数返回esp_err_t及调用者持有的ErrorInfo。先必要禁能，再锁存首故障和最后有效现场，次级禁能错误单独记录；不使用全局last_error。固定16条事件与独立首故障槽使用短临界区，序号表示提交顺序。NimBLE callout按订阅重放首故障与历史，每次至多提交一条DIAG事件。g_diag_crash使用COREDUMP_DRAM_ATTR；Flash只在panic保存，启用NO_OVERWRITE，不自动擦除。
+普通函数返回esp_err_t及调用者持有的ErrorInfo。先必要禁能，再锁存首故障和最后有效现场，次级禁能错误单独记录；不使用全局last_error。固定16条事件与独立首故障槽使用短临界区，序号表示提交顺序。BLE自身初始化/运行错误也使用ErrorInfo和同一事件环；不维护BLE专属错误快照或无线编码。g_diag_crash使用COREDUMP_DRAM_ATTR；Flash只在panic保存，启用NO_OVERWRITE，不自动擦除。
 
-串口运行诊断复用app_main每100ms观察首帧/首个平衡周期，首次平衡成功或故障后返回；启动前已收到停止事件时等待重新ARM。运行中只写定长计时快照，balancing与driving分别表示平衡使能和遥控授权，故障冻结当轮阶段与耗时，禁能并停止定时器后一次性打印。output_age使用用户授权的4ms编码器年龄门，新增current_output_age独立检查2ms电流年龄，两者在PWM前后检查并报告各自实测值；读取耗时仍分别限2ms，原始时间起点不变。4ms通过不等于1kHz周期验收。RAM布局schema=3，无线schema保持1。首轮控制/姿态dt显式初始化，后续继续按实际间隔保护。
+串口运行诊断复用app_main每100ms观察首帧/首个平衡周期，首次平衡成功或故障后返回。运行中只写定长计时快照，balancing与driving分别表示平衡使能和目标时效有效，故障冻结当轮阶段与耗时，禁能并停止定时器后一次性打印。output_age使用用户授权的4ms编码器年龄门，新增current_output_age独立检查2ms电流年龄，两者在PWM前后检查并报告各自实测值；读取耗时仍分别限2ms，原始时间起点不变。4ms通过不等于1kHz周期验收。RAM布局schema=4，没有无线诊断schema。首轮控制/姿态dt显式初始化，后续继续按实际间隔保护。
 
 **为什么这样设计**
 
-保留底层错误、通道和源码位置，同时让控制路径没有文本格式化、网络发送、动态分配或Flash写入。代价是普通故障RAM记录在掉电后丢失，历史环可覆盖，通知不能证明客户端已保存；旧dump占用分区时新panic不会覆盖它。
+保留底层错误、通道和源码位置，同时让控制路径没有文本格式化、网络发送、动态分配或Flash写入。代价是普通故障RAM记录在掉电后丢失，历史环可覆盖；旧dump占用分区时新panic不会覆盖它。
 
 **成立条件 / 约束**
 
@@ -312,7 +313,6 @@ flowchart LR
     BSP --> ErrorInfo
     ErrorInfo --> Stop[必要禁能]
     Stop --> RAM[首故障与16条事件]
-    RAM --> DIAG[BLE DIAG]
     RAM --> Dump[panic Core dump]
 ```
 
@@ -324,4 +324,4 @@ flowchart LR
 
 - 依据：error_info.hpp、diagnostic_store.hpp、diagnostics.cpp、application_tasks.cpp、ble_command_service.cpp、sdkconfig.defaults和partitions.csv。
 - 已核对：固定资源、错误传播、测试及开/关构建；详见docs/codex/diagnostics_validation.md。
-- 未确认 / 未验证：实板上电、禁能、实时性、手机GATT缓存、订阅/重连以及Flash dump保存和匹配ELF解码。
+- 未确认 / 未验证：实板上电、禁能、实时性、手机GATT缓存、命令队列延迟以及Flash dump保存和匹配ELF解码。

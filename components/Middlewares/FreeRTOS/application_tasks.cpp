@@ -2,6 +2,7 @@
 
 #include "balance_controller.hpp"
 #include "ble_command_service.hpp"
+#include "motion_command.hpp"
 #include "bmi160_attitude.hpp"
 #include "diagnostics.hpp"
 #include "motor_foc_service.hpp"
@@ -19,7 +20,7 @@ namespace {
 
 /*
  * 控制任务独占传感器与执行器；可选Wi-Fi任务消费最新遥测。
- * 初始化完成后开始本地零速平衡；v2 ARM只授权速度和转向目标。
+ * 初始化完成后开始本地零速平衡；BleTask只提供速度和转向目标。
  */
 
 constexpr std::uint32_t kWifiPeriodMs = 50U;
@@ -30,7 +31,7 @@ std::int64_t cycle_started_us{};
 
 
 // stopControl()关闭电机输出后挂起控制任务，避免故障状态继续驱动执行器。
-[[noreturn]] void stopControl(const ErrorInfo &error, std::uint8_t fault=2U, bool emergency=false, bool boot_failure=false)
+[[noreturn]] void stopControl(const ErrorInfo &error, bool boot_failure=false)
 {
     if (cycle_started_us != 0) { cycle_timing.elapsed_us=esp_timer_get_time()-cycle_started_us; }
     ErrorInfo secondary{};
@@ -38,7 +39,6 @@ std::int64_t cycle_started_us{};
     diagnostics::controlTiming(cycle_timing);
     diagnostics::record(error,true);
     if (rc != ESP_OK) { diagnostics::record(secondary); }
-    ble::publishFault(fault,emergency);
     motor::disableOutputs();
     if (control_timer) { esp_timer_stop(control_timer); }
     // 输出已禁能，定时器已停止；一次性串口报告不占用运行周期预算。
@@ -55,7 +55,7 @@ std::int64_t cycle_started_us{};
 }
 void bootResult(diagnostics::BootStep step, esp_err_t rc, const ErrorInfo &error)
 {
-    if (rc != ESP_OK) { stopControl(error,1,false,true); }
+    if (rc != ESP_OK) { stopControl(error,true); }
     diagnostics::boot(step,"OK",rc);
 }
 
@@ -66,6 +66,17 @@ void releaseControl(void *task_handle)
 }
 
 } // namespace
+
+void bleTask(void *argument)
+{
+    auto &context=*static_cast<TaskContext *>(argument);
+    BleStartup startup{};
+    startup.result=ble::initialize(&startup.error);
+    xQueueOverwrite(context.ble_startup_queue,&startup);
+    if (startup.result == ESP_OK) { ble::run(context.command_queue); }
+    // 初始化失败不重试，也不放行控制；静态任务资源保留供诊断。
+    for (;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+}
 
 void controlTask(void *argument)
 {
@@ -80,9 +91,6 @@ void controlTask(void *argument)
     esp_err_t result=imu::initialize(&error);
     bootResult(diagnostics::BootStep::imu,result,error);
     diagnostics::boot(diagnostics::BootStep::motor,"BEGIN");
-    if (ble::latestCommand().mode == ble::RemoteMode::emergency) {
-        VEHICLE_ERROR(&error,ESP_ERR_INVALID_STATE,emergency,application,0); stopControl(error,0,true,true);
-    }
     result=motor::initialize(&error,[](std::uint16_t step,const char *state) {
         diagnostics::boot(static_cast<diagnostics::BootStep>(step),state);
     });
@@ -91,7 +99,7 @@ void controlTask(void *argument)
     result=motor::pauseOutputs(&error);
     bootResult(diagnostics::BootStep::outputs_off,result,error);
     imu::resetEstimator();
-    ESP_LOGI("control_diag","CONTROL_START mode=INDEPENDENT_BALANCE; BLE ARM authorizes motion targets");
+    ESP_LOGI("control_diag","CONTROL_START mode=INDEPENDENT_BALANCE; BLE supplies velocity and yaw targets");
     ESP_LOGI("control_diag","CONTROL_CONFIG current_period_us=%llu attitude_period_us=%llu outer_period_us=%ld",
         static_cast<unsigned long long>(config::kControlPeriodUs),
         static_cast<unsigned long long>(config::kControlPeriodUs * config::kAttitudeDivider),
@@ -118,11 +126,11 @@ void controlTask(void *argument)
     diagnostics::boot(diagnostics::BootStep::complete,"OK");
     ESP_LOGI("boot","BOOT_SUMMARY OK");
     diagnostics::completeBoot();
-    ble::allowControl();
+    const auto command_ready_us=esp_timer_get_time();
+    control::MotionCommand latest_command{};
 
     std::uint32_t sequence = 0U;
     std::uint32_t balance_cycles=0U, skipped_releases=0U;
-    control::BalanceEnableState balance_enable{};
     bool was_balancing = false;
     bool current_saturated = false;
     std::int64_t previous_cycle_us = 0;
@@ -143,25 +151,19 @@ void controlTask(void *argument)
         const float cycle_dt_s = cycle_timing.dt_us * 1.0e-6f;
         previous_cycle_us = cycle_time_us;
         cycle_timing.stage=ControlStage::command;
-        if (!(cycle_dt_s > 0.0f && cycle_dt_s <= config::kMaximumControlGapS)) { VEHICLE_ERROR(&error, ESP_ERR_TIMEOUT, control_gap, application, 0, cycle_dt_s, config::kMaximumControlGapS, -1, 3, 1); stopControl(error,3U); }
-        const ble::CommandSnapshot command = ble::latestCommand();
-        if (command.mode == ble::RemoteMode::emergency) { VEHICLE_ERROR(&error, ESP_ERR_INVALID_STATE, emergency, application, 0); stopControl(error,0U,true); }
-        const bool driving = command.mode == ble::RemoteMode::active;
-        const bool balancing=control::stepBalanceEnable(balance_enable,driving,command.stop_generation);
+        if (!(cycle_dt_s > 0.0f && cycle_dt_s <= config::kMaximumControlGapS)) { VEHICLE_ERROR(&error, ESP_ERR_TIMEOUT, control_gap, application, 0, cycle_dt_s, config::kMaximumControlGapS, -1, 3, 1); stopControl(error); }
+        // 非阻塞读取最新目标；ControlTask独立检查时效，包括BleTask饥饿的情况。
+        (void)xQueueReceive(context.command_queue,&latest_command,0);
+        const bool driving=control::freshCommand(latest_command,cycle_time_us,command_ready_us);
+        const auto command=driving ? latest_command : control::MotionCommand{};
+        const bool balancing=true;
         const bool starting = balancing && !was_balancing;
         cycle_timing.balancing=balancing; cycle_timing.driving=driving; cycle_timing.starting=starting;
         if (balancing) { cycle_timing.balance_cycle=++balance_cycles; }
-        if (!balancing || starting) {
+        if (starting) {
             control::initialize(controller);
             output = {};
             current_saturated = false;
-        }
-        if (!balancing) {
-            cycle_timing.stage=ControlStage::outputs_off;
-            const auto started=esp_timer_get_time();
-            result=motor::pauseOutputs(&error);
-            cycle_timing.outputs_off_us=esp_timer_get_time()-started;
-            if (result != ESP_OK) { stopControl(error); }
         }
         was_balancing = balancing;
         control::observeCurrentSaturation(controller, current_saturated);
@@ -188,7 +190,7 @@ void controlTask(void *argument)
             const float pitch_rate_rad_s = attitude.pitch_rate_deg_s * config::kDegToRad;
             if (!attitude.valid || !std::isfinite(pitch_rad) || !std::isfinite(pitch_rate_rad_s)) { VEHICLE_ERROR(&error, ESP_ERR_INVALID_RESPONSE, imu_filter, application, 0); stopControl(error); }
             if (balancing && std::abs(pitch_rad - config::kPitchOffsetRad) > config::kFallAngleRad) { VEHICLE_ERROR(&error, ESP_ERR_INVALID_STATE, fall, application, 0, pitch_rad-config::kPitchOffsetRad, config::kFallAngleRad, -1, 3, 1); stopControl(error); }
-            if (!(attitude_dt_s > 0.0f && attitude_dt_s <= config::kMaximumControlGapS)) { VEHICLE_ERROR(&error, ESP_ERR_TIMEOUT, attitude_gap, application, 0, attitude_dt_s, config::kMaximumControlGapS, -1, 3, 1); stopControl(error,3U); }
+            if (!(attitude_dt_s > 0.0f && attitude_dt_s <= config::kMaximumControlGapS)) { VEHICLE_ERROR(&error, ESP_ERR_TIMEOUT, attitude_gap, application, 0, attitude_dt_s, config::kMaximumControlGapS, -1, 3, 1); stopControl(error); }
         }
         // 编码器仍每个电流周期采集；本轮外环同时使用最新IMU和最新轮速。
         motor::WheelState wheels{};
@@ -200,16 +202,12 @@ void controlTask(void *argument)
         if (attitude_due) {
             const float pitch_rad = attitude.pitch_deg * config::kDegToRad;
             const float pitch_rate_rad_s = attitude.pitch_rate_deg_s * config::kDegToRad;
-            // BLE旧转向刻度仅在边界解释；正旧转向=左轮更快，故映射到负偏航。
-            const float yaw_command_rad_s = -std::clamp(
-                command.steering_voltage_v / config::kRemoteSteeringVoltageV, -1.0f, 1.0f) *
-                config::kYawRateLimitRadS;
             cycle_timing.stage=ControlStage::outer;
             const auto outer_start=esp_timer_get_time();
             output = control::update(controller, {
                 wheels.left_velocity_rad_s, wheels.right_velocity_rad_s,
-                pitch_rad, pitch_rate_rad_s, command.throttle_velocity_rad_s,
-                yaw_command_rad_s, balancing, driving}, attitude_dt_s);
+                pitch_rad, pitch_rate_rad_s, command.velocity_rad_s,
+                command.yaw_rate_rad_s, balancing, driving}, attitude_dt_s);
             cycle_timing.outer_us=esp_timer_get_time()-outer_start;
             if (!output.valid) { VEHICLE_ERROR(&error, ESP_ERR_INVALID_RESPONSE, control_output, application, 0); stopControl(error); }
         }
@@ -221,14 +219,10 @@ void controlTask(void *argument)
         current_saturated = current.left.voltage_saturated || current.right.voltage_saturated ||
             current.left.reference_limited || current.right.reference_limited;
         if (esp_timer_get_time() - cycle_time_us > static_cast<std::int64_t>(config::kMaximumControlGapS * 1.0e6f)) {
-            VEHICLE_ERROR(&error, ESP_ERR_TIMEOUT, control_gap, application, 0, esp_timer_get_time()-cycle_time_us, config::kMaximumControlGapS*1.0e6f, -1, 3, 1); stopControl(error,3U);
+            VEHICLE_ERROR(&error, ESP_ERR_TIMEOUT, control_gap, application, 0, esp_timer_get_time()-cycle_time_us, config::kMaximumControlGapS*1.0e6f, -1, 3, 1); stopControl(error);
         }
         ++sequence;
         cycle_timing.stage=ControlStage::publish;
-        ble::publishStatus(ble::StatusSnapshot{
-            command, cycle_time_us, sequence, attitude.pitch_deg,
-            wheels.left_velocity_rad_s, wheels.right_velocity_rad_s, 0U, true,
-        });
         diagnostics::controlSnapshot({cycle_time_us,sequence,attitude.pitch_deg,
             wheels.left_velocity_rad_s,wheels.right_velocity_rad_s,output.left_target_a,output.right_target_a,
             current.left.iq_measured_a,current.right.iq_measured_a,cycle_dt_s,true});
