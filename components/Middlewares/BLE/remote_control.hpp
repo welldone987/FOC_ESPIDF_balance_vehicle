@@ -18,13 +18,16 @@ struct RemoteState {
     bool fault{};
     bool boot_complete{};
     bool run_allowed{};
+    std::uint32_t stop_generation{}; // S/失联/超时事件不被后续D或快速重连覆盖。
 };
 
 constexpr void remoteConnection(RemoteState &state, bool connected)
 {
     const bool emergency = state.emergency;
     const bool fault=state.fault, boot=state.boot_complete, allowed=state.run_allowed;
+    const auto stop_generation=state.stop_generation + (state.connected && !connected ? 1U : 0U);
     state = RemoteState{};
+    state.stop_generation=stop_generation;
     state.connected = connected;
     state.emergency = emergency;
     state.fault=fault; state.boot_complete=boot; state.run_allowed=allowed;
@@ -55,6 +58,7 @@ constexpr bool acceptCommand(RemoteState &state, RemoteCommand command,
     }
     // 即使控制任务尚未观察超时，新到达的D也不能覆盖失联事件。
     if (expired && state.mode == RemoteMode::active) {
+        ++state.stop_generation;
         state.stop_pending = true;
         state.stop_reason = RemoteMode::timeout;
     }
@@ -63,6 +67,7 @@ constexpr bool acceptCommand(RemoteState &state, RemoteCommand command,
         state.stop_reason = RemoteMode::idle;
     }
     if (command.kind == 'S') {
+        ++state.stop_generation;
         state.stop_pending = true;
         state.stop_reason = RemoteMode::stopped;
     }
@@ -98,7 +103,7 @@ constexpr void stepRemote(RemoteState &state, std::int64_t now_us)
     }
     if (!state.connected) { state.mode = RemoteMode::disconnected; return; }
     if (state.has_command && now_us - state.received_us >= kCommandTimeoutUs) {
-        if (state.mode == RemoteMode::active) { state.mode = RemoteMode::timeout; }
+        if (state.mode == RemoteMode::active) { ++state.stop_generation; state.mode = RemoteMode::timeout; }
         state.pending = false;
         return;
     }

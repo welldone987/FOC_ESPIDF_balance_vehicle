@@ -46,10 +46,7 @@ constexpr std::uint8_t kGyroOffsetEnable = 0x80U;
 constexpr std::uint8_t kAccelRange2G = 0x03U;
 constexpr std::uint8_t kGyroRange1000Dps = 0x01U;
 constexpr std::uint8_t kOdrMask = 0x0FU;
-constexpr std::uint8_t kOdr1600Hz = 0x0CU;
-
-constexpr float kComplementaryGyroWeight = 0.98f;
-constexpr float kComplementaryAccelWeight = 0.02f;
+constexpr std::uint8_t kOdr800Hz = 0x0BU;
 
 // bus和device保持BMI160共享I2C0总线的模块级句柄。
 i2c_bus_handle_t bus = nullptr;
@@ -234,7 +231,7 @@ esp_err_t initialize(ErrorInfo *error)
         return result;
     }
 
-    // 量程保持参考实现的±2g和±1000dps，数据更新率保持1600Hz。
+    // 量程为±2g和±1000dps；芯片ODR为800Hz，ControlTask按200Hz读取最新帧。
     // 只替换ODR低四位，保留配置寄存器中的滤波带宽位。
     result = writeRegister(kRegAccelRange, kAccelRange2G, error);
     if (result != ESP_OK) {
@@ -244,7 +241,7 @@ esp_err_t initialize(ErrorInfo *error)
     if (result != ESP_OK) {
         return result;
     }
-    value = static_cast<std::uint8_t>((value & ~kOdrMask) | kOdr1600Hz);
+    value = static_cast<std::uint8_t>((value & ~kOdrMask) | kOdr800Hz);
     result = writeRegister(kRegAccelConf, value, error);
     if (result != ESP_OK) {
         return result;
@@ -257,7 +254,7 @@ esp_err_t initialize(ErrorInfo *error)
     if (result != ESP_OK) {
         return result;
     }
-    value = static_cast<std::uint8_t>((value & ~kOdrMask) | kOdr1600Hz);
+    value = static_cast<std::uint8_t>((value & ~kOdrMask) | kOdr800Hz);
     result = writeRegister(kRegGyroConf, value, error);
     if (result != ESP_OK) {
         return result;
@@ -279,7 +276,7 @@ void resetEstimator()
 {
     // 重新建立积分起点，避免初始化前的时间间隔进入下一次姿态计算。
     last_pitch_deg = 0.0f;
-    previous_sample_us = esp_timer_get_time();
+    previous_sample_us = 0;
 }
 
 esp_err_t readAttitude(AttitudeSample *out, ErrorInfo *error)
@@ -319,10 +316,13 @@ esp_err_t readAttitude(AttitudeSample *out, ErrorInfo *error)
     }
 
     // 陀螺仪积分提供短期响应，加速度计角度修正长期漂移。
-    const float next_pitch_deg =
-        kComplementaryGyroWeight *
+    // 独立平衡可能立即启动，首帧用测得姿态建基准，不能从0缓慢爬升后才发现倾倒。
+    const float gyro_weight = config::kAttitudeComplementaryTimeConstantS /
+        (config::kAttitudeComplementaryTimeConstantS + interval_s);
+    const float next_pitch_deg = previous_sample_us == 0 ? accelerometer_pitch_deg :
+        gyro_weight *
             (last_pitch_deg + gyro_y_deg_s * interval_s) +
-        kComplementaryAccelWeight * accelerometer_pitch_deg;
+        (1.0f - gyro_weight) * accelerometer_pitch_deg;
     if (!std::isfinite(next_pitch_deg) || !std::isfinite(gyro_y_deg_s)) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, imu_filter, application, 0, next_pitch_deg, 0, -1, 1); }
     last_pitch_deg = next_pitch_deg;
     previous_sample_us = now_us;

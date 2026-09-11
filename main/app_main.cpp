@@ -95,5 +95,7 @@ extern "C" void app_main(void)
     if (!task) {
         VEHICLE_ERROR(&error,ESP_ERR_NO_MEM,boot_resource,application,0);
         finish(BootStep::timer,ESP_ERR_NO_MEM,error);
+        return;
     }
+    diagnostics::observeControlStart();
 }

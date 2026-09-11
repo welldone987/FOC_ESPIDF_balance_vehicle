@@ -11,7 +11,7 @@ enum class ErrorPoint : std::uint16_t {
     motor_gate=0x300, enable_gpio, disable_gpio, left_driver, right_driver,
     left_encoder_init, right_encoder_init, left_encoder_read, right_encoder_read,
     right_alignment, left_alignment, wheel_dt, wheel_invalid, wheel_age, current_dt,
-    command_invalid, left_pi_svpwm, right_pi_svpwm, output_age, motor_state,
+    command_invalid, left_pi_svpwm, right_pi_svpwm, output_age, motor_state, current_output_age,
     imu_bus=0x400, imu_device, imu_read, imu_write, imu_id, imu_pmu_timeout, imu_foc_timeout, imu_state, imu_filter,
     imu_soft_reset, imu_accel_normal, imu_gyro_normal, imu_accel_range, imu_accel_conf,
     imu_gyro_range, imu_gyro_conf, imu_foc_config, imu_foc_start, imu_foc_offset,

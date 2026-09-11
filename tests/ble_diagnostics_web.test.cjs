@@ -126,3 +126,30 @@ test('JSON export includes raw evidence and separate sessions after disconnect',
   assert.equal(output.captures[0].firstFault.rawCode,-123);assert.equal(output.captures[0].firstFault.rawHex,event);
   assert.ok(output.captures[0].endedAt);assert.equal(output.captures[0].metadata.firstPoint,516);
 });
+test('received FAULT and subsequent stop or blur revoke do not write S or disconnect',()=>{
+  const h=harness(),writes=[];let disconnected=false;
+  h.context.mockCommand={async writeValueWithResponse(data){writes.push(new TextDecoder().decode(data));}};
+  h.context.mockDevice={gatt:{connected:true,disconnect(){disconnected=true;}}};
+  h.run('startDiagCapture({});ready=true;wanted=true;arming=3;device=mockDevice;commandCharacteristic=mockCommand');
+  h.context.packet=bytes(h,'02 06 11 02 00 00 61 00 00 00 00 00 00 00 00 00 00 00 00 00');
+  h.run('receiveStatus(packet);revoke();pump()');
+  assert.deepEqual(writes,[]);assert.equal(disconnected,false);assert.equal(h.run('ready'),true);assert.equal(h.run('wanted'),false);
+});
+test('in-flight command rejection after fault retains diagnostic connection and exports error',async()=>{
+  const h=harness();let reject;
+  h.context.mockDevice={gatt:{connected:true,disconnect(){throw new Error('must retain diagnostic link');}}};
+  h.context.mockCommand={writeValueWithResponse(){return new Promise((resolve,r)=>{reject=r;});}};
+  h.run('startDiagCapture({});ready=true;device=mockDevice;commandCharacteristic=mockCommand');status(h,17);
+  const pending=h.run('pump()');receive(h,'01 12 03 01 00 00 00 00 03 00 00 00 00 ff');
+  reject(new Error('GATT operation failed'));await pending;
+  assert.equal(h.run('ready'),true);assert.equal(h.run('diagCapture.lastGattError.command'),'D,0,0,0');
+  assert.equal(h.run('diagCapture.lastValidStatus.sampleSequence'),17);
+  assert.equal(h.run('diagCapture.endedAt'),null);
+});
+test('unexplained write failure still disconnects and records why',async()=>{
+  const h=harness();let disconnected=false;
+  h.context.mockDevice={gatt:{connected:true,disconnect(){disconnected=true;}}};
+  h.context.mockCommand={async writeValueWithResponse(){throw new Error('link lost');}};
+  h.run('startDiagCapture({});ready=true;device=mockDevice;commandCharacteristic=mockCommand');
+  await h.run('pump()');assert.equal(disconnected,true);assert.match(h.run('diagCapture.endReason'),/link lost/);
+});

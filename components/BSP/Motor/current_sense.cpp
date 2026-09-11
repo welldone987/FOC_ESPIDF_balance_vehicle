@@ -34,8 +34,8 @@ esp_err_t readMillivolts(std::array<int, 4> &values, ErrorInfo *error)
             return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, current_range, application, 0, values[i], values[i] < config::kCurrentAdcMinMv ? config::kCurrentAdcMinMv : config::kCurrentAdcMaxMv, i, 7);
         }
     }
-    return esp_timer_get_time() - sample_started_us <= config::kCurrentSampleMaxAgeUs
-        ? ESP_OK : VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_timeout, application, 0, esp_timer_get_time()-sample_started_us, config::kCurrentSampleMaxAgeUs, -1, 3, 1);
+    return esp_timer_get_time() - sample_started_us <= config::kCurrentReadMaxDurationUs
+        ? ESP_OK : VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_timeout, application, 0, esp_timer_get_time()-sample_started_us, config::kCurrentReadMaxDurationUs, -1, 3, 1);
 }
 
 } // namespace

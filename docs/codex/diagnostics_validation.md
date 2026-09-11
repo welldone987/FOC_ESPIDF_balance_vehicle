@@ -1,6 +1,6 @@
 # 初始化、故障诊断与持久化验收
 
-日期：2026-09-11。依据用户提供的FOC_Diagnostics_BLE_Refactor_Condensed.md，修改直接位于main工作区，未commit/push/flash/erase或运行实板。
+日期：2026-09-11。本文保留初始化与持久化重构的验收数据，对应现已提交的feature分支基线80b777e；未push/flash/erase或运行实板。下面的10组QEMU测试、904字节诊断对象和资源表属于该基线，当前串口诊断修复的验证结果见[独立平衡串口验收](./serial_output_age_debug.md)。
 
 ## 改了什么
 

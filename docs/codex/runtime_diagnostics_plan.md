@@ -1,10 +1,10 @@
 # 从BOOT到控制循环的运行诊断方案
 
-状态：设计草案，尚未修改固件。当前新版网页已支持现有BLE诊断字段，但下面新增的阶段和详细现场尚未通过协议发送。
+状态：分阶段实施。串口首帧/首次平衡观察、运行故障报告、分段耗时与首轮时间基准已实现，见[当前串口说明](./serial_output_age_debug.md)。本页的CONTROL_READY连续验收门、独立阻塞观察、BOOT编号调整与详细BLE扩展仍是后续方案，未实现。
 
 ## 问题定义
 
-当前BOOT_SUMMARY OK在controlTask的for循环之前输出，随后即allowControl。运行期stopControl只保存RAM、发布BLE故障并等待，不打印串口。于是“外设初始化成功”和“控制周期真正跑通”之间没有串口证据，也没有独立的控制就绪门。
+BOOT_SUMMARY OK仍在controlTask的for循环之前输出，随后allowControl。当前增加CONTROL_LOOP_ALIVE和CONTROL_BALANCE_ACTIVE提供首帧与首次平衡完成证据，运行期stopControl在禁能并停止定时器后打印完整故障。独立的CONTROL_READY连续运行验收门尚未实现。
 
 保留BOOT_SUMMARY的含义：硬件/服务初始化成功；增加CONTROL_READY表示未驾驶状态下的周期链已经工作。串口负责把启动过程完整交接到CONTROL_READY，BLE负责之后的状态、事件和导出。驾驶电流环只有ARM后才执行，因此CONTROL_READY不能宣称电流闭环或车辆平衡已验证。
 
@@ -35,7 +35,7 @@ CONTROL_READY cycles=2000 elapsed_ms=2000 outputs=OFF arm_allowed=1
 
 ```text
 CONTROL_FAULT stage=ENCODER point=wheel_age code=ESP_ERR_TIMEOUT
-  raw_domain=application raw=0 value_us=2310 threshold_us=2000
+  raw_domain=application raw=0 value_us=4310 threshold_us=4000
   cycle=1 notify_count=8 release_count=9 file=... line=...
 CONTROL_SUMMARY FAIL
 ```
@@ -70,4 +70,4 @@ CONTROL_SUMMARY FAIL
 - ARM后的电流采样与PWM链需单独的受保护台架验证，测电流相序/极性、零偏、采样时效、1ms预算及Wi-Fi共存。CONTROL_READY不能替代这些验证。
 - 串口断开后，页面须能读取首次故障、最近有效状态并导出；复位前导出RAM，panic后使用匹配ELF提取Flash dump。
 - 启动观察者只解决READY之前的可见性。READY后的永久阻塞，需要另行评估既有看门狗的订阅、超时和安全禁能路径；不能声称BLE心跳观察或ControlTask内部stopControl能处理所有卡死。当前TASK_WDT_PANIC未开启，不保证每种卡死都会产生Core dump。
-- 固件变化后执行完整IDF构建、内存/栈检查，再进行授权后的实板验证。本轮只有网页修改和方案文档，没有执行上述固件变更。
+- 固件变化后执行完整IDF构建、内存/栈检查，再进行授权后的实板验证。已实现部分以当前串口说明为准，不把本页后续设计视为硬件验证结论。

@@ -43,6 +43,7 @@
   "785": "right_pi_svpwm",
   "786": "output_age",
   "787": "motor_state",
+  "788": "current_output_age",
   "1024": "imu_bus",
   "1025": "imu_device",
   "1026": "imu_read",

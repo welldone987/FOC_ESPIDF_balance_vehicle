@@ -222,7 +222,7 @@ flowchart LR
 
 当前项目是 DengFOC V4 / ESP32-WROOM-32 的原生 ESP-IDF v6.0.2 C++ 平衡车固件。main完成一次性启动，ControlTask持有控制器状态并执行传感器、FOC和控制计算；可选Wi-Fi任务消费最新快照；诊断使用静态事件环和首故障槽。BLE以NimBLE回调提交命令，控制任务执行授权/超时/停止决策；NimBLE主机每100 ms回传最新状态。
 
-当前电机执行量为iq电流，BSP显式Iq投影、单Iq PI及第十一课六扇区SVPWM；控制任务请求1000 us，姿态按2ms绝对截止点、速度/转向累计10 ms更新。当前硬件确认门为true；本次没有修改该值，实板验证证据仍缺失。初始化先建立GPIO12低电平，按固定步骤检查并在BOOT_SUMMARY后放行控制。Wi-Fi服务周期50 ms；BLE DIAG复用100 ms callout。不存在独立IMU任务或DRDY ISR链路。详见[三环控制](../codex/control/current_cascade_tuning.md)。
+当前电机执行量为iq电流，BSP显式Iq投影、单Iq PI及第十一课六扇区SVPWM；M0/M1车辆前进映射均为-1，目标电流与轮速/Iq/Uq反馈同步转换，电角度对齐方向和相电流极性保持独立；控制任务请求1000 us，姿态按5ms绝对截止点、速度/转向累计10 ms更新。当前硬件确认门为true；本次没有修改该值，实板验证证据仍缺失。初始化先建立GPIO12低电平，按固定步骤检查并在BOOT_SUMMARY后独立启动零速平衡；BLE ARM只授权运动目标，S/超时/实际断连停机后须重新ARM。Wi-Fi服务周期50 ms；BLE DIAG复用100 ms callout。不存在独立IMU任务或DRDY ISR链路。详见[三环控制](../codex/control/current_cascade_tuning.md)。
 
 #### 整体关系图
 
@@ -249,7 +249,7 @@ flowchart LR
 
 **功能职责**
 
-建立静态队列，初始化电源、检查启动电压并启动BLE，依次创建诊断、控制和Wi-Fi任务。
+建立静态队列，初始化电源、检查启动电压并启动BLE，创建控制和可选Wi-Fi任务；app_main观察首帧及首次平衡成功或故障，不创建独立诊断任务。
 
 **所属模块**
 
@@ -292,7 +292,7 @@ flowchart LR
 
 **功能职责**
 
-顺序核验编码器与相电流，运行电流PI；分频采集姿态，计算速度PI、姿态PD、偏航PI及左右目标电流。
+先分频采集姿态并检查倾倒，再核验编码器，计算到期外环和左右目标电流，采相电流并运行电流PI；编码器到PWM限4ms、电流到PWM独立限2ms。
 
 **所属模块**
 
@@ -433,7 +433,7 @@ NimBLE特征回调严格解析命令，控制任务通过latestCommand执行授�
 
 **Runtime Entry**
 
-`diagnostics::boot / record / controlSnapshot`
+`diagnostics::boot / record / controlSnapshot / controlTiming / observeControlStart`
 
 **Change Entry**
 
@@ -449,7 +449,7 @@ NimBLE特征回调严格解析命令，控制任务通过latestCommand执行授�
 
 **输出**
 
-- 启动串口日志、DIAG无线包、COREDUMP_DRAM_ATTR g_diag_crash
+- 启动串口日志、首帧/首个平衡周期及故障串口现场、DIAG无线包、COREDUMP_DRAM_ATTR g_diag_crash（RAM schema=3）
 
 **关键组件**
 
@@ -462,7 +462,7 @@ NimBLE特征回调严格解析命令，控制任务通过latestCommand执行授�
 
 **已知约束**
 
-- 不新增诊断任务或普通错误Flash日志；Flash dump保留旧内容，仅panic生成。Notify成功只表示本地提交。
+- 不新增诊断任务或普通错误Flash日志；app_main每100ms观察固定快照至首次平衡成功/故障，故障日志在禁能停定时器后输出。首轮dt使用明确初始化周期，后续使用实际间隔；没有连续CONTROL_READY验收门。Flash dump保留旧内容，仅panic生成。Notify成功只表示本地提交。
 
 ---
 
@@ -541,7 +541,7 @@ flowchart LR
 
 **作用**
 
-启动顺序为安全输出、诊断静态存储、电源/电压、NVS/dump检查、BLE首次广播、可选Wi-Fi、IMU、电机/零偏/编码器/右对齐/左对齐、关闭输出、定时器、BOOT_SUMMARY、控制放行。IMU及电机由ControlTask持有并初始化；必要步骤失败锁存停机，可选Wi-Fi失败降级。
+启动顺序为安全输出、诊断静态存储、电源/电压、NVS/dump检查、BLE首次广播、可选Wi-Fi、IMU、电机/零偏/编码器/右对齐/左对齐、关闭输出、定时器、BOOT_SUMMARY、控制放行。BMI160加速度计/陀螺仪ODR均800Hz，软件读取及姿态环200Hz，互补滤波使用实际dt和98ms时间常数。IMU及电机由ControlTask持有并初始化；必要步骤失败锁存停机，可选Wi-Fi失败降级。
 
 **主路径**
 
@@ -562,7 +562,7 @@ flowchart LR
 
 | 运行单元 | 所属模块 | 触发 / 频率 | 职责 | 同步 / 通信 |
 | --- | --- | --- | --- | --- |
-| app_main | main | 启动一次 | 检查及创建静态资源后删除自身 | TaskContext |
+| app_main | main | 启动一次，随后每100ms观察快照 | 初始化后报告首帧及首次平衡成功，首次平衡成功或故障后返回；启动前已停止时等待重新ARM | TaskContext、诊断短临界区 |
 | ESP_TIMER_TASK回调 | ESP-IDF / FreeRTOS | 请求1000 us | 通知控制任务 | xTaskNotifyGive |
 | ControlTask | FreeRTOS | Core 1，优先级20，目标1000 Hz | 电流FOC，分频IMU与外环 | ulTaskNotifyTake(pdTRUE)、队列覆盖 |
 | WifiTelemetryTask | FreeRTOS | Core 0，优先级4，每50 ms，仅总开关启用时存在 | 推进TCP | vTaskDelayUntil、队列peek、事件位 |
@@ -574,14 +574,14 @@ flowchart LR
 | 数据 | 生产者 | 消费者 | 所有权 / 生命周期 | 传输方式 |
 | --- | --- | --- | --- | --- |
 | ControllerState | controlTask初始化及update | 控制器 | 控制任务栈，任务生命周期 | 引用 |
-| CommandSnapshot | BLE接收请求，控制任务stepRemote执行决策 | 控制任务 | BLE静态RemoteState；返回值为副本 | portMUX保护，停止/急停独立标记 |
+| CommandSnapshot | BLE接收请求，控制任务stepRemote执行决策 | 控制任务 | BLE静态RemoteState；返回值为副本 | portMUX保护，停止/急停独立标记；停止事件序号跨重连保留 |
 | StatusSnapshot | 控制任务 | NimBLE主机 | BLE静态最新值；不保留历史 | publishStatus短临界区复制，通知每100 ms发送 |
 | WheelState / AttitudeSample | BSP同步读取 | 控制任务 | 本周期局部值；估计器历史由IMU内部持有 | 函数返回 |
 | CurrentCommand | 控制器输出 | 电机服务 | 本周期局部值，采样后立即闭环 | runCurrentControl |
 | TelemetrySnapshot | 控制任务 | Wi-Fi任务 | main静态长度1队列 | 覆盖与复制，允许丢弃中间帧 |
 | pending发送缓冲区 | TCP service | socket | Wi-Fi任务独占，768字节 | 保存部分发送偏移 |
 | TaskContext | main | 控制与可选Wi-Fi任务 | 文件静态生命周期 | Wi-Fi启用时持有队列句柄 |
-| g_diag_crash | 启动、ControlTask、NimBLE | DIAG、panic Core dump | 固定DRAM，短临界区 | 16条事件、独立首故障、有效/故障快照、BLE状态 |
+| g_diag_crash | 启动、ControlTask、NimBLE | app_main串口观察、故障报告、DIAG、panic Core dump | 固定DRAM，短临界区 | 16条事件、独立首故障、有效/故障快照、BLE状态及最近/故障/首次采样与平衡耗时 |
 
 TCP v2每行21列：原七列后追加左右实测Iq、左右Uq、六路相电流、current_dt_s、current_sample_age_us、current_saturated、current_valid；LF分帧，速度差为左减右。快照sequence用于本机去重，不是CSV字段；device_time_us为控制周期入口时间，不是逐传感器采样时刻。慢客户端阻塞约1秒后关闭连接，实际判断受50 ms服务节拍影响。
 
@@ -593,10 +593,10 @@ TCP v2每行21列：原七列后追加左右实测Iq、左右Uq、六路相电�
 | --- | --- | --- | --- | --- |
 | Unverified | 电流控制 | 硬件确认门当前true；相序、极性、增益及采样同步仍缺乏实测证据 | 台架电流与时序数据 | 依三环控制说明逐环验证 |
 | Unverified | 整机 | 当前工作区固件已通过ESP-IDF v6.0.2全项目编译；未烧录验证 | 对应固件运行结果 | 授权后烧录与上板测试 |
-| Unverified | 实时性 | 1000 Hz是配置；通知积压由pdTRUE合并，不证明每个释放点均执行 | WCET、抖动、丢周期、栈余量 | 测量定时、GPIO与诊断日志 |
+| Unverified | 实时性 | 电流1000Hz/姿态200Hz是目标；新时序及4ms角度年龄候选待实测；pdTRUE合并通知不证明每个释放点均执行 | WCET、抖动、丢周期、栈余量 | 测量定时、GPIO与诊断日志 |
 | Unverified | BLE与停止行为 | v2/DIAG与故障注入本机测试通过；未实机验证 | MTU、通知、命令延迟、公共使能关闭后的实际停止距离、急停延迟和栈余量 | 授权后保护架与断连/后台/共存测试 |
 | Unverified | Wi-Fi/TCP | 自动连接、断线重试及bool开关尚无实机结果 | AP兼容性、重连和客户端数据 | 分别测试开关、断网、慢客户端 |
-| Unverified | 传感器与安全 | 同步读寄存器不能证明新样本率或跨传感器同步；WheelState.valid检查编码器读取、ADC量程与年龄 | 时戳、总线故障检测、姿态真值 | 注入读失败并与参考姿态比较 |
+| Unverified | 传感器与安全 | 800Hz ODR/200Hz最新帧读取未做FIFO抗混叠；同步读寄存器不能证明新样本率或跨传感器同步，分别检查编码器/ADC有效性及年龄 | 时戳、总线故障检测、姿态真值 | 注入读失败并与参考姿态比较 |
 | Unverified | 浮点保护 | Motor、IMU、Control与控制任务关闭fast-math；第三方库行为仍需实板检查 | 优化后二进制行为 | 独立故障注入和编译选项审查 |
 | Unverified | 硬件映射 | docs/codex/hardware/board_dengfoc_v4.md已对照原理图与例程，GPIO12公共使能、GPIO22为CS0 | 实际接线与极性 | 台架核验 |
 | Unverified | Core dump | 配置保留旧dump，g_diag_crash进入专用DRAM段；未实板验证 | 保存完整性、匹配ELF解码、人工清除流程 | 维护命令及授权台架测试 |

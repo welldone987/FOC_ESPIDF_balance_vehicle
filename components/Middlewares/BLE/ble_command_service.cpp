@@ -417,7 +417,7 @@ CommandSnapshot latestCommand()
                            -config::kMaximumThrottleVelocityRadS, config::kMaximumThrottleVelocityRadS) : 0.0f,
         state.applied_sequence, state.connected, state.mode,
         state.has_command ? now_us - state.received_us : -1,
-        state.command.legacy, state.has_applied, epoch,
+        state.command.legacy, state.has_applied, epoch, state.stop_generation,
     };
 }
 

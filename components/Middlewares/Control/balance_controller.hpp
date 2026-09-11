@@ -1,6 +1,20 @@
 #pragma once
+#include <cstdint>
 
 namespace vehicle::control {
+// ControlTask持有本地平衡使能；停止事件跨BLE重连保留，只有新的ARM可恢复。
+struct BalanceEnableState {
+    bool enabled{true};
+    std::uint32_t observed_stop{};
+};
+constexpr bool stepBalanceEnable(BalanceEnableState &state, bool remote_active,
+                                 std::uint32_t stop_generation)
+{
+    if (stop_generation != state.observed_stop) { state.enabled=false; }
+    else if (remote_active) { state.enabled=true; }
+    state.observed_stop=stop_generation;
+    return state.enabled;
+}
 // 车辆坐标：前进、前倾、右轮更快产生的偏航为正。
 struct ControlInput {
     float left_velocity_rad_s;
@@ -9,7 +23,8 @@ struct ControlInput {
     float pitch_rate_rad_s;
     float throttle_velocity_rad_s;
     float yaw_rate_rad_s;
-    bool driving;
+    bool balancing;
+    bool driving; // 只授权非零遥控目标；未授权时仍运行零速平衡。
 };
 struct ControlOutput {
     float target_pitch_rad;

@@ -16,6 +16,7 @@ struct CommandSnapshot {
     bool legacy;
     bool sequence_valid;
     std::uint32_t connection_epoch;
+    std::uint32_t stop_generation; // 仅本机任务交接，不改变20字节无线报文。
 };
 
 struct StatusSnapshot {

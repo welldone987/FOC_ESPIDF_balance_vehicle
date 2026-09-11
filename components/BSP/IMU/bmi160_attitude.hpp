@@ -7,7 +7,7 @@ namespace imu {
 
 /*
  * 姿态模块从BMI160读取陀螺仪和加速度计原始数据。
- * readAttitude()把角速度积分与加速度俯仰角按0.98/0.02互补融合。
+ * readAttitude()按实际采样间隔与配置时间常数融合角速度积分和加速度俯仰角。
  * AttitudeSample把姿态角、角速度和本次读取有效性传给控制任务。
  */
 struct AttitudeSample {
@@ -22,7 +22,7 @@ struct AttitudeSample {
 // initialize()创建或复用I2C0，配置BMI160并完成陀螺仪硬件偏置校准。
 esp_err_t initialize(ErrorInfo *error=nullptr);
 
-// resetEstimator()把滤波角度清零，并从当前时刻重新开始积分计时。
+// resetEstimator()清除历史；下个有效样本以实测加速度计倾角建立基准。
 void resetEstimator();
 
 // readAttitude()读取一帧陀螺仪和加速度计数据并返回互补滤波结果。

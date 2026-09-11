@@ -19,7 +19,7 @@
 3. 查看采样序号是否持续增加。命令序号不动可能只是未驾驶，不能据此判断任务停机。
 4. 导出JSON。BLE当前没有传输完整ErrorInfo的code/value/threshold/valid_fields/file/function/line或完整控制快照；application域raw_code=0不表示没有故障。
 
-要读完整RAM对象，可以在后续固件加入只读的诊断快照导出，或在适配好的JTAG/GDB会话中执行下面的p命令。普通USB串口不是任意RAM读取器；当前PANIC_GDBSTUB未启用。经典ESP32默认JTAG引脚与本板电机引脚存在复用，不能未经板图检查直接连接或启用JTAG。不要为获取普通故障记录主动触发panic。
+当前串口固件会在保护停机后自动打印CONTROL_FAULT、CONTROL_ERROR_FIELDS、CONTROL_STAGE和CONTROL_OUTPUT，包含完整首因字段与当轮阶段耗时，详见[串口定位](./serial_output_age_debug.md)。这些输出不需要Core dump；BLE仍只传输原有摘要。要读完整RAM对象，可以在适配好的JTAG/GDB会话中执行下面的p命令。普通USB串口不是任意RAM读取器；当前PANIC_GDBSTUB未启用。经典ESP32默认JTAG引脚与本板电机引脚存在复用，不能未经板图检查直接连接或启用JTAG。不要为获取普通故障记录主动触发panic。
 
 ## 读取Flash并保存为离线文件
 
@@ -63,12 +63,18 @@ p g_diag_crash.first_fault
 p g_diag_crash.first_fault.error
 p g_diag_crash.fault_control
 p g_diag_crash.last_control
+p g_diag_crash.fault_timing
+p g_diag_crash.last_timing
+p g_diag_crash.first_loop
+p g_diag_crash.first_balance
 p g_diag_crash.events
 p g_diag_crash.last_ble_error
 quit
 ```
 
 优先读first_fault而不是事件环最后一项，后者可能只是次级错误。fault_control是首次致命错误时复制的最后有效控制快照；如果第一轮尚未完成，其valid可能为false、sequence为0。value/threshold/channel分别由valid_fields的bit0/1/2决定是否有意义。浮点现场没有有效位时不能把默认0当实测。
+
+RAM schema=3的fault_timing记录失败当轮阶段和耗时，first_loop/first_balance分别保留首次完整采样周期/平衡周期；其cycle=0表示尚未记录。balancing与driving分别标记平衡使能和遥控授权。计时单位为us，未执行阶段的默认0不表示实测耗时为零。旧固件的匹配ELF可能没有这些字段，不应使用新版ELF解释旧dump。
 
 当前仅显式收录g_diag_crash及SDK选择的任务现场，CONFIG_ESP_COREDUMP_CAPTURE_DRAM未开启，不能假设全部堆/全局内存都在dump中。NO_OVERWRITE开启时旧dump可能来自更早的故障；必须核对来源，提取并确认后再单独安排清理。本说明不执行或提供自动擦除流程。
 

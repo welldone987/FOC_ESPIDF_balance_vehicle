@@ -45,18 +45,21 @@ inline constexpr int kMotorPolePairs = 7;
 inline constexpr float kPwmBusReferenceV = 12.0f;
 inline constexpr float kMotorSensorAlignmentVoltageV = 2.0f;
 inline constexpr float kWheelVelocityFilterS = 0.01f;
-inline constexpr float kMotor0ForwardSign = 1.0f;
-inline constexpr float kMotor1ForwardSign = 1.0f;
+// 车辆前进坐标到电机坐标的映射；目标电流与轮速/Iq反馈同步反向。
+inline constexpr float kMotor0ForwardSign = -1.0f;
+inline constexpr float kMotor1ForwardSign = -1.0f;
 
 // kBatteryVoltageScale恢复7.5k/1k分压前的母线电压，kStartupUndervoltageThresholdV用于启动检查。
 inline constexpr float kStartupUndervoltageThresholdV = 9.0f;
 inline constexpr float kBatteryVoltageScale = 8.5f;
 inline constexpr std::uint32_t kAdcDefaultVrefMv = 1100U;
 
-// 三环调度：电流1kHz，姿态500Hz，速度/转向100Hz；频率不是实测带宽。
-inline constexpr unsigned kAttitudeDivider = 2U;
+// 三环调度目标：电流1kHz，姿态200Hz，速度/转向100Hz；频率不是实测带宽。
+inline constexpr unsigned kAttitudeDivider = 5U;
 inline constexpr float kOuterPeriodS = 0.010f;
 inline constexpr float kMaximumControlGapS = 0.010f;
+// 一阶互补滤波时间常数；dt=2ms时陀螺仪权重仍为0.98，dt=5ms时约0.9515。
+inline constexpr float kAttitudeComplementaryTimeConstantS = 0.098f;
 inline constexpr float kRadToDeg = 57.295779513f;
 inline constexpr float kDegToRad = 1.0f / kRadToDeg;
 inline constexpr float kFallAngleRad = 30.0f * kDegToRad;
@@ -75,7 +78,11 @@ inline constexpr int kCurrentOffsetMaxMv = 1900;
 inline constexpr int kCurrentOffsetNoiseMv = 100;
 inline constexpr float kCurrentLimitA = 1.0f;
 inline constexpr float kPhaseTripA = 1.3f;
-inline constexpr std::int64_t kCurrentSampleMaxAgeUs = 2000;
+// 读取耗时与输出时效分别限制；编码器4ms为低速调试候选，尚非实板验证值。
+inline constexpr std::int64_t kEncoderReadMaxDurationUs = 2000;
+inline constexpr std::int64_t kEncoderOutputMaxAgeUs = 4000;
+inline constexpr std::int64_t kCurrentReadMaxDurationUs = 2000;
+inline constexpr std::int64_t kCurrentOutputMaxAgeUs = 2000;
 // 原理图OUT1/OUT2对应A/B、桥臂流向电机为正；实际接线和极性仍需台架验证。
 inline constexpr float kCurrentPolarity = 1.0f;
 // 第十一课运行时P=5/I=200；两份库均以秒做梯形积分，无需频率换算。
@@ -109,6 +116,9 @@ inline constexpr float kYawRateFeedforward = 0.0f;
 static_assert(kCurrentLimitA > 0.0f && kPhaseTripA > kCurrentLimitA);
 static_assert(kWheelRadiusM > 0.0f && kWheelTrackM > 0.0f);
 static_assert(kAttitudeDivider > 0U);
+static_assert(kAttitudeComplementaryTimeConstantS > 0.0f);
+static_assert(kEncoderReadMaxDurationUs > 0 && kEncoderOutputMaxAgeUs >= kEncoderReadMaxDurationUs);
+static_assert(kCurrentReadMaxDurationUs > 0 && kCurrentOutputMaxAgeUs >= kCurrentReadMaxDurationUs);
 static_assert(kUqLimitV > 0.0f && kPwmBusReferenceV > 0.0f);
 static_assert(kSvpwmLinearMargin > 0.0f && kSvpwmLinearMargin <= 1.0f);
 static_assert(kCurrentShuntOhm > 0.0f && kCurrentAmplifierGain > 0.0f);

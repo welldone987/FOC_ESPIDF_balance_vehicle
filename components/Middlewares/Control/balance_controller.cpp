@@ -40,17 +40,17 @@ ControlOutput update(ControllerState &s, const ControlInput &in, float dt)
         initialize(s);
         return {};
     }
-    // 未运行时清零；运行中零指令仍闭合速度环，实现零速目标。
-    if (!in.driving) { initialize(s); return {0, 0, 0, 0, 0, true}; }
+    // 本地平衡使能独立于遥控；未ARM时闭合零速/零偏航环。
+    if (!in.balancing) { initialize(s); return {0, 0, 0, 0, 0, true}; }
     s.outer_elapsed_s += dt;
-    if (in.driving && s.outer_elapsed_s >= config::kOuterPeriodS) {
+    if (s.outer_elapsed_s >= config::kOuterPeriodS) {
         const float outer_dt = s.outer_elapsed_s;
         s.outer_elapsed_s = 0.0f;
         const float acceleration = advance(s.speed_reference_rad_s,
-            limited(in.throttle_velocity_rad_s, config::kDriveSpeedLimitRadS),
+            in.driving ? limited(in.throttle_velocity_rad_s, config::kDriveSpeedLimitRadS) : 0.0f,
             config::kWheelAccelerationRadS2, outer_dt);
         const float yaw_acceleration = advance(s.yaw_reference_rad_s,
-            limited(in.yaw_rate_rad_s, config::kYawRateLimitRadS),
+            in.driving ? limited(in.yaw_rate_rad_s, config::kYawRateLimitRadS) : 0.0f,
             config::kYawAccelerationRadS2, outer_dt);
         const float speed = (in.left_velocity_rad_s + in.right_velocity_rad_s) * 0.5f;
         const float pitch_ff = config::kAccelerationFeedforward *

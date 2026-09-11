@@ -238,8 +238,8 @@ esp_err_t readWheelState(WheelState *out, ErrorInfo *error)
     if (!std::isfinite(left_rad_s) || !std::isfinite(right_rad_s)) {
         return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, wheel_invalid, application, 0);
     }
-    if (esp_timer_get_time() - started_us > config::kCurrentSampleMaxAgeUs) {
-        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, wheel_age, application, 0, esp_timer_get_time()-started_us, config::kCurrentSampleMaxAgeUs, -1, 3, 1);
+    if (esp_timer_get_time() - started_us > config::kEncoderReadMaxDurationUs) {
+        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, wheel_age, application, 0, esp_timer_get_time()-started_us, config::kEncoderReadMaxDurationUs, -1, 3, 1);
     }
     left_state=next_left; right_state=next_right;
     encoder_started_us=started_us; previous_encoder_us=started_us;
@@ -248,8 +248,11 @@ esp_err_t readWheelState(WheelState *out, ErrorInfo *error)
     return ESP_OK;
 }
 
-esp_err_t runCurrentControl(const CurrentCommand &command, CurrentFeedback *out, ErrorInfo *error)
+esp_err_t runCurrentControl(const CurrentCommand &command, CurrentFeedback *out, ErrorInfo *error, CurrentTiming *timing)
 {
+    CurrentTiming local{};
+    auto &trace = timing ? *timing : local;
+    trace = {};
     if (!out || !initialized || stopped || !wheel_sample_ready) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, motor_state, application, 0); }
     *out = {};
     wheel_sample_ready = false;
@@ -257,8 +260,13 @@ esp_err_t runCurrentControl(const CurrentCommand &command, CurrentFeedback *out,
         return VEHICLE_ERROR(error, ESP_ERR_INVALID_ARG, command_invalid, application, 0);
     }
     current_sense::Sample sample{};
+    trace.stage=CurrentStage::adc;
+    const auto adc_started_us=esp_timer_get_time();
     const auto rc = current_sense::read(&sample, error);
+    const auto math_started_us=esp_timer_get_time();
+    trace.adc_us=math_started_us-adc_started_us;
     if (rc != ESP_OK) { return rc; }
+    trace.stage=CurrentStage::math;
     const float dt_s = previous_current_us == 0 ? config::kControlPeriodUs * 1.0e-6f :
         (sample.started_us - previous_current_us) * 1.0e-6f;
     if (!(dt_s > 0.0f && dt_s <= config::kMaximumControlGapS)) {
@@ -272,13 +280,36 @@ esp_err_t runCurrentControl(const CurrentCommand &command, CurrentFeedback *out,
         config::kMotor1ForwardSign, dt_s, right_duty);
     if (!left_duty.valid) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, left_pi_svpwm, application, 0); }
     if (!right_duty.valid) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, right_pi_svpwm, application, 0); }
-    if (esp_timer_get_time()-encoder_started_us > config::kCurrentSampleMaxAgeUs) {
-        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, output_age, application, 0);
+    auto checked_us=esp_timer_get_time();
+    trace.math_us=checked_us-math_started_us;
+    trace.stage=CurrentStage::before_pwm;
+    trace.encoder_age_us=checked_us-encoder_started_us;
+    trace.current_age_us=checked_us-sample.started_us;
+    if (trace.encoder_age_us > config::kEncoderOutputMaxAgeUs) {
+        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, output_age, application, 0,
+            trace.encoder_age_us, config::kEncoderOutputMaxAgeUs, -1, 3, 1);
     }
+    if (trace.current_age_us > config::kCurrentOutputMaxAgeUs) {
+        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_output_age, application, 0,
+            trace.current_age_us, config::kCurrentOutputMaxAgeUs, -1, 3, 1);
+    }
+    trace.stage=CurrentStage::pwm;
+    const auto pwm_started_us=esp_timer_get_time();
     writePwm(left_driver, left_duty); writePwm(right_driver, right_duty);
-    if (esp_timer_get_time()-encoder_started_us > config::kCurrentSampleMaxAgeUs) {
-        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, output_age, application, 0);
+    checked_us=esp_timer_get_time();
+    trace.pwm_us=checked_us-pwm_started_us;
+    trace.stage=CurrentStage::after_pwm;
+    trace.encoder_age_us=checked_us-encoder_started_us;
+    trace.current_age_us=checked_us-sample.started_us;
+    if (trace.encoder_age_us > config::kEncoderOutputMaxAgeUs) {
+        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, output_age, application, 0,
+            trace.encoder_age_us, config::kEncoderOutputMaxAgeUs, -1, 3, 1);
     }
+    if (trace.current_age_us > config::kCurrentOutputMaxAgeUs) {
+        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_output_age, application, 0,
+            trace.current_age_us, config::kCurrentOutputMaxAgeUs, -1, 3, 1);
+    }
+    trace.stage=CurrentStage::enable;
     if (!outputs_enabled) {
         const auto enabled = gpio_set_level(board::pins::kMotorCommonEnable, 1);
         if (enabled != ESP_OK) { return VEHICLE_ERROR(error, enabled, enable_gpio, esp, enabled); }
@@ -286,6 +317,7 @@ esp_err_t runCurrentControl(const CurrentCommand &command, CurrentFeedback *out,
     }
     left_state=next_left; right_state=next_right; previous_current_us=sample.started_us;
     *out = {left, right, dt_s, esp_timer_get_time()-sample.started_us, true};
+    trace.stage=CurrentStage::complete;
     return ESP_OK;
 }
 esp_err_t inhibitOutputs(ErrorInfo *error)

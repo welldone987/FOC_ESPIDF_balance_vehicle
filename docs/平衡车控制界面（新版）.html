@@ -40,7 +40,7 @@
 <div class="diag-table-wrap"><table class="diag-table"><thead><tr><th scope="col">事件 / 级别</th><th scope="col">本机接收时间</th><th scope="col">检测点</th><th scope="col">原始域 / 码</th><th scope="col">通道</th></tr></thead><tbody id="diag-events"><tr><td colspan="5" class="diag-empty">等待设备事件；正常运行时可以没有错误事件。</td></tr></tbody></table></div>
 <details class="diag-foot"><summary>数据范围与保存方式</summary><p>此处显示固件 BLE DIAG 摘要和错误事件，不是串口日志镜像。当前无线包不含实测值、阈值、源码行号或完整控制快照；原始码 0 也不表示无故障，应用层检查可能没有 SDK 原始码。通道含义由检测点决定。</p><p>固件先重放首故障，再重放仍在 RAM 中的历史；页面按事件序号去重。首故障之外的设备事件最多保留 16 条，历史可能被覆盖。页面每次连接最多保留 256 条事件及独立首故障，最多保留 8 次连接，断开后仍可导出；刷新或关闭页面前请导出。接收时间来自电脑，不是设备故障时间。</p><p>启动完成只代表 BOOT 检查通过；采样序号持续变化才说明控制循环在推进。此处不能读取 Flash Core dump，也不能证明闭环稳定或电机实际输出。</p></details>
 </section>
-<footer>遥控 20 Hz / 状态 10 Hz。WiFi-TCP 保留用于电脑调试。开始遥控只授权驾驶，设备启动对齐仍可能转动。<br>基于灯哥开源控制界面 · 需要支持 Web Bluetooth 的浏览器与安全上下文。</footer>
+<footer>遥控 20 Hz / 状态 10 Hz。WiFi-TCP 保留用于电脑调试。设备初始化后自动进入零速平衡，“开始遥控”授权速度和转向目标。<br>待授权表示遥控状态，不代表电机关闭；停止、断开连接和遥控超时会关闭输出，重新授权才恢复。<br>基于灯哥开源控制界面 · 需要支持 Web Bluetooth 的浏览器与安全上下文。</footer>
 </main>
 <script>
 'use strict';
@@ -57,7 +57,7 @@ let lastStatusAt = -Infinity, status = null, pointerId = null;
 let notice = '连接设备后查看状态，再开始遥控。';
 const now = () => performance.now();
 const fresh = () => status && now() - lastStatusAt < 600 && status.valid;
-const terminal = () => status && (status.mode === 5 || status.mode === 6);
+const terminal = () => (status && (status.mode === 5 || status.mode === 6)) || !!diagCapture?.firstFault;
 const canDrive = () => ready && wanted && arming === 0 && fresh() && status.mode === 2;
 
 // 与 scripts/diagnostic_dictionary.json 对齐；单文件页面无需网络加载字典。
@@ -106,6 +106,7 @@ const DIAG_POINTS = {
   "785": "right_pi_svpwm",
   "786": "output_age",
   "787": "motor_state",
+  "788": "current_output_age",
   "1024": "imu_bus",
   "1025": "imu_device",
   "1026": "imu_read",
@@ -148,7 +149,7 @@ const DIAG_POINTS = {
 }; // DIAG_DICTIONARY
 const DIAG_DOMAINS = ['application','ESP-IDF','NimBLE','SimpleFOC'];
 const BOOT_NAMES = ['','安全输出','诊断存储','电源驱动','启动电压','NVS','Core dump 检查','BLE','Wi-Fi','IMU','电机','关闭输出','控制定时器','初始化完成'];
-const DIAG_LABELS = {current_raw:'相电流 ADC 读取',current_range:'相电流 ADC 范围',current_timeout:'相电流采样超时',offset_mean:'电流零偏',offset_noise:'零偏噪声',phase_limit:'实测相过流',reconstructed_limit:'重构相过流',left_encoder_read:'左编码器读取',right_encoder_read:'右编码器读取',wheel_dt:'轮速采样间隔',wheel_invalid:'轮速无效',wheel_age:'编码器采样时效',current_dt:'电流采样间隔',left_pi_svpwm:'左电机 PI / SVPWM',right_pi_svpwm:'右电机 PI / SVPWM',output_age:'PWM 输出时效',imu_read:'IMU 读取',imu_filter:'姿态数据无效',control_gap:'控制周期间隔或执行超时',attitude_gap:'姿态更新间隔',fall:'倾倒保护',control_output:'外环输出无效',control_timer:'控制定时器',emergency:'急停'};
+const DIAG_LABELS = {current_raw:'相电流 ADC 读取',current_range:'相电流 ADC 范围',current_timeout:'相电流采样超时',offset_mean:'电流零偏',offset_noise:'零偏噪声',phase_limit:'实测相过流',reconstructed_limit:'重构相过流',left_encoder_read:'左编码器读取',right_encoder_read:'右编码器读取',wheel_dt:'轮速采样间隔',wheel_invalid:'轮速无效',wheel_age:'编码器采样时效',current_dt:'电流采样间隔',left_pi_svpwm:'左电机 PI / SVPWM',right_pi_svpwm:'右电机 PI / SVPWM',output_age:'编码器到 PWM 时效',current_output_age:'电流到 PWM 时效',imu_read:'IMU 读取',imu_filter:'姿态数据无效',control_gap:'控制周期间隔或执行超时',attitude_gap:'姿态更新间隔',fall:'倾倒保护',control_output:'外环输出无效',control_timer:'控制定时器',emergency:'急停'};
 let diagCharacteristic = null, diagCapture = null, diagCaptures = [], diagSubscribed = false;
 let diagTransport = '连接后自动订阅诊断。查看故障不需要开始遥控。';
 let diagDirty = true, diagReading = false, sampleChangedAt = -Infinity, lastSampleSequence = null;
@@ -174,7 +175,8 @@ function decodeDiagMetadata(value) {
 }
 function startDiagCapture(selected) {
   diagCapture = {deviceName:selected.name || '平衡车',startedAt:new Date().toISOString(),endedAt:null,
-    metadata:null,metadataAt:null,events:[],firstFault:null,evicted:0,decodeErrors:0,lastDecodeError:null,status:null};
+    metadata:null,metadataAt:null,events:[],firstFault:null,evicted:0,decodeErrors:0,lastDecodeError:null,status:null,
+    lastValidStatus:null,lastGattError:null,endReason:null};
   diagCaptures.push(diagCapture);
   if (diagCaptures.length>8) diagCaptures.shift();
   diagTransport='正在连接诊断通道…'; diagDirty=true;diagSubscribed=false;
@@ -317,7 +319,10 @@ function revoke(action = 'S', message = '已请求停止行驶，等待车辆回
   arming = 0;
   armSequence = null;
   if (action === 'E') emergencyRequested = true;
-  if (ready && (!emergencyRequested || action === 'E')) pendingAction = action;
+  if (terminal() && action !== 'E') {
+    pendingAction=null;
+    message='车辆已锁存故障或急停，保留连接读取诊断；普通驾驶命令已停止。';
+  } else if (ready && (!emergencyRequested || action === 'E')) pendingAction = action;
   notice = message;
   render();
   void pump();
@@ -328,7 +333,7 @@ function teardown(message) {
   ++session; // 所有旧连接的异步完成回调失效。
   ready = false; connecting = false; busy = false;
   diagCharacteristic=null;diagReading=false;diagSubscribed=false;
-  if (diagCapture) { diagCapture.endedAt=new Date().toISOString();diagTransport='连接已断开 · 保留本次诊断，可导出后分析。'; }
+  if (diagCapture) { diagCapture.endedAt=new Date().toISOString();diagCapture.endReason=message;diagTransport='连接已断开 · 保留本次诊断，可导出后分析。'; }
   if (timer !== null) clearInterval(timer);
   timer = null; device = null; commandCharacteristic = null; statusCharacteristic = null;
   emergencyRequested = false; pendingAction = null; desired = {steer:0, throttle:0};
@@ -353,6 +358,7 @@ function receiveStatus(value) {
     lastSampleSequence=status.sampleSequence;sampleChangedAt=now();
   }
   if (diagCapture) diagCapture.status={...status,receivedAt:new Date().toISOString(),rawHex:packetHex(value)};
+  if (diagCapture && status.valid) diagCapture.lastValidStatus={...diagCapture.status};
   lastStatusAt = now();
   if (arming === 3 && status.mode === 2 && status.sequenceValid && status.sequence === armSequence && status.valid) {
     arming = 0; notice = '遥控已就绪。拖动摇杆或聚焦摇杆后使用方向键。';
@@ -417,6 +423,8 @@ function beginControl() {
 
 async function pump() {
   if (!ready || busy || !commandCharacteristic) return;
+  // 已确认车端锁存停机后，不再发送会被固件拒绝的D/A/S；E仍允许幂等请求。
+  if (terminal() && pendingAction !== 'E') { pendingAction=null;return; }
   let kind = pendingAction;
   if (kind) pendingAction = null;
   else if (document.hidden || terminal() || emergencyRequested) return;
@@ -435,7 +443,13 @@ async function pump() {
     if (token !== session) return;
     if (sendingNeutral && arming === 1 && wanted) { arming = 2; armAt = now() + 120; }
   } catch (error) {
-    if (token === session) teardown(`命令发送失败：${error.message}。已断开连接，急停执行状态未确认。`);
+    if (token === session) {
+      if (diagCapture) diagCapture.lastGattError={name:error.name,message:error.message,command:text,at:new Date().toISOString()};
+      if (terminal() && device?.gatt.connected) {
+        desired={steer:0,throttle:0};wanted=false;arming=0;armSequence=null;pendingAction=null;
+        notice='车辆已锁存故障；在途命令被拒绝，保留连接读取诊断。';render();
+      } else teardown(`命令发送失败：${error.message}。已断开连接，急停执行状态未确认。`);
+    }
   } finally {
     if (token === session) { busy = false; if (pendingAction) void pump(); }
   }
