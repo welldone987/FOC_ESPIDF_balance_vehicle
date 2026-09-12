@@ -20,7 +20,7 @@ inline constexpr float kYawAccelerationRadS2 = 0.5f;
 inline constexpr float kPitchOffsetRad = 1.8f * kDegToRad;
 inline constexpr float kPitchLimitRad = 3.0f * kDegToRad;
 // kAttitudeKpAPerRad和kAttitudeKdAPerRadS属于Control姿态PD，输出平衡电流请求。
-inline constexpr float kAttitudeKpAPerRad = 0.08f * kRadToDeg;
+inline constexpr float kAttitudeKpAPerRad = 0.056f * kRadToDeg;
 inline constexpr float kAttitudeKdAPerRadS = 0.01f * kRadToDeg;
 // kSpeedKpRadPerRadS和kSpeedKiRadPerRad属于Control速度PI，输出目标俯仰角。
 inline constexpr float kSpeedKpRadPerRadS = 1.0f * kDegToRad;

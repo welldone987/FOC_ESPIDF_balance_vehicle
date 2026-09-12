@@ -222,7 +222,7 @@ flowchart LR
 
 DengFOC V4 / ESP32-WROOM-32原生ESP-IDF v6.0.2固件。app_main建立静态资源并启动任务；BleTask负责蓝牙初始化、命令解析及速度/偏航目标转换；ControlTask独占传感器、电机和故障停机；可选Wi-Fi任务输出TCP遥测。错误统一为Middlewares/Diagnostics/error_info.hpp中的ErrorInfo / ErrorPoint，BLE回传俯仰角/轮速及有效标志，不回传错误码或DIAG。
 
-电机执行量为iq电流，BSP采用显式Iq投影、单Iq PI、PI后Uq低通与六扇区SVPWM；两轮车辆前进映射均为-1。控制周期目标2000us，姿态5000us，速度/偏航10000us。初始化完成后独立零速平衡，BLE只改变运动目标；断连/过期目标归零，故障锁存停机。倾倒硬停机门为相对平衡零点50度。硬件确认门当前true，但实板证据仍未验证。详见[三环控制](../codex/control/current_cascade_tuning.md)。
+电机执行量为iq电流，BSP采用显式Iq投影、单Iq PI与六扇区SVPWM（PI后Uq低通已旁路）；两轮车辆前进映射均为-1。控制周期目标2000us，姿态5000us，速度/偏航10000us。初始化完成后独立零速平衡，BLE只改变运动目标；断连/过期目标归零，故障锁存停机。倾倒硬停机门为相对平衡零点50度。硬件确认门当前true，但实板证据仍未验证。详见[三环控制](../codex/control/current_cascade_tuning.md)。
 
 #### 整体关系图
 
@@ -308,7 +308,7 @@ flowchart LR
 
 **Main Path**
 
-`定时器通知 → 命令队列 → 到期姿态/倾倒 → 编码器 → 外环 → 电流PI/Uq低通/SVPWM`
+`定时器通知 → 命令队列 → 到期姿态/倾倒 → 编码器 → 外环 → 电流PI/SVPWM`
 
 **输入**
 
@@ -487,7 +487,7 @@ NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、阻塞接�
 | BSP/IMU | BMI160与互补滤波 | initialize / readAttitude | i2c_bus、Board、Diagnostics错误类型 |
 | BSP/Encoder | AS5600总线、角度缓存与SimpleFOC传感器接口 | CheckedEncoder | i2c_bus、Diagnostics错误类型、esp_simplefoc |
 | BSP/CurrentSensor | INA240 ADC、零点校准与三相电流重建 | initialize / read / release | esp_adc、Board、Diagnostics错误类型 |
-| BSP/Motor | 电流PI、Iq反馈与Uq输出滤波、SVPWM、对齐及输出 | initialize / runCurrentControl / inhibitOutputs | Encoder、CurrentSensor、esp_simplefoc、Board |
+| BSP/Motor | 电流PI、Iq反馈滤波、SVPWM、对齐及输出（Uq输出滤波已旁路） | initialize / runCurrentControl / inhibitOutputs | Encoder、CurrentSensor、esp_simplefoc、Board |
 | Middlewares/Control | 速度PI、姿态PD、平衡优先分配、命令时效及控制计时 | update / MotionCommand / ControlTiming | Motor执行器约束 |
 | Middlewares/FreeRTOS | 静态应用任务入口与调度 | bleTask / controlTask / wifiTelemetryTask | BSP、BLE、Control、Diagnostics |
 | Middlewares/BLE | GAP/GATT、原始报文队列与运动解析 | initialize / run | NimBLE、FreeRTOS、Control命令类型 |

@@ -97,8 +97,10 @@ MotorSample calculateCurrent(MotorState &state, const current_sensor::PhaseCurre
         config::kSvpwmLinearMargin * config::kPwmBusReferenceV / 1.7320508075688772f);
     const auto pi = updateCurrentPi(state.pi, forward_sign * reference_a - state.iq_filtered_a,
         dt_s, voltage_limit_v);
-    const float output_alpha = dt_s / (config::kCurrentOutputFilterS + dt_s);
-    state.uq_filtered_v += output_alpha * (pi.applied_v - state.uq_filtered_v);
+    // 暂停PI后Uq低通，直接输出限幅后的PI电压，遥测与实际输出保持一致。
+    // const float output_alpha = dt_s / (config::kCurrentOutputFilterS + dt_s);
+    // state.uq_filtered_v += output_alpha * (pi.applied_v - state.uq_filtered_v);
+    state.uq_filtered_v = pi.applied_v;
     if (pi.valid) { duty = calculateSvpwmDuty(state.uq_filtered_v, state.electrical_angle_rad, config::kPwmBusReferenceV); }
     // 遥测Iq与Uq转换为车辆前进坐标；相电流仍为桥臂到电机坐标。
     return {reference_a, forward_sign * state.iq_filtered_a, forward_sign * state.uq_filtered_v,

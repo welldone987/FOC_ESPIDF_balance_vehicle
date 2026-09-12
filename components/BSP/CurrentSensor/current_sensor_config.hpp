@@ -13,7 +13,7 @@ inline constexpr unsigned kOffsetSamples = 1000U;
 inline constexpr int kAdcMinMv = 150;
 inline constexpr int kAdcMaxMv = 2450;
 inline constexpr int kOffsetMinMv = 1300;
-inline constexpr int kOffsetMaxMv = 1900;
+inline constexpr int kOffsetMaxMv = 2000;
 inline constexpr int kOffsetNoiseMv = 100;
 // kPhaseTripA限制实测相电流及重建C相电流，单位A。
 inline constexpr float kPhaseTripA = 1.3f;
