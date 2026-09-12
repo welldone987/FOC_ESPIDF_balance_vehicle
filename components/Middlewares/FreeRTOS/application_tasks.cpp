@@ -26,7 +26,9 @@ namespace {
  * 初始化完成后开始本地零速平衡；BleTask只提供速度和转向目标。
  */
 
-constexpr std::uint32_t kWifiPeriodMs = 50U;
+#if CONFIG_VEHICLE_WIFI_ENABLED
+constexpr std::uint32_t kWifiPeriodMs = 100U;
+#endif
 esp_timer_handle_t control_timer{};
 // 仅ControlTask访问；运行中不格式化日志，完成/故障时复制定长现场。
 control::ControlTiming cycle_timing{};
@@ -74,7 +76,7 @@ void bleTask(void *argument)
 {
     auto &context=*static_cast<TaskContext *>(argument);
     BleStartup startup{};
-    startup.result=ble::initialize(&startup.error);
+    startup.result=ble::initialize(context.telemetry_queue,&startup.error);
     xQueueOverwrite(context.ble_startup_queue,&startup);
     if (startup.result == ESP_OK) { ble::run(context.command_queue); }
     // 初始化失败不重试，也不放行控制；静态任务资源保留供诊断。
@@ -105,7 +107,7 @@ void controlTask(void *argument)
     ESP_LOGI("control_diag","CONTROL_START mode=INDEPENDENT_BALANCE; BLE supplies velocity and yaw targets");
     ESP_LOGI("control_diag","CONTROL_CONFIG current_period_us=%llu attitude_period_us=%llu outer_period_us=%ld",
         static_cast<unsigned long long>(motor::config::kControlPeriodUs),
-        static_cast<unsigned long long>(motor::config::kControlPeriodUs * control::config::kAttitudeDivider),
+        static_cast<unsigned long long>(control::config::kAttitudePeriodUs),
         static_cast<long>(control::config::kOuterPeriodS * 1.0e6f));
     ESP_LOGI("control_diag","CONTROL_LIMITS encoder_output_max_age_us=%lld current_output_max_age_us=%lld",
         static_cast<long long>(encoder::config::kOutputMaxAgeUs),
@@ -181,10 +183,9 @@ void controlTask(void *argument)
             cycle_timing.imu_us=esp_timer_get_time()-imu_start;
             if (result != ESP_OK) { stopControl(error); }
             attitude_dt_s = control::sampleInterval(cycle_time_us,previous_attitude_us,
-                motor::config::kControlPeriodUs * control::config::kAttitudeDivider) * 1.0e-6f;
+                control::config::kAttitudePeriodUs) * 1.0e-6f;
             previous_attitude_us = cycle_time_us;
-            constexpr auto attitude_period_us = static_cast<std::int64_t>(
-                motor::config::kControlPeriodUs * control::config::kAttitudeDivider);
+            constexpr auto attitude_period_us = static_cast<std::int64_t>(control::config::kAttitudePeriodUs);
             // 按5ms绝对截止点更新姿态，跳过旧释放点，不补算积压样本。
             if (cycle_time_us >= next_attitude_us) {
                 next_attitude_us += ((cycle_time_us - next_attitude_us) / attitude_period_us + 1) * attitude_period_us;
@@ -229,7 +230,6 @@ void controlTask(void *argument)
         diagnostics::controlSnapshot({cycle_time_us,sequence,attitude.pitch_deg,
             wheels.left_velocity_rad_s,wheels.right_velocity_rad_s,output.left_target_a,output.right_target_a,
             current.left.iq_measured_a,current.right.iq_measured_a,cycle_dt_s,true});
-#if CONFIG_VEHICLE_WIFI_ENABLED
         const wifi_telemtry::TelemetrySnapshot snapshot{
             cycle_time_us, sequence, attitude.pitch_deg,
             wheels.left_velocity_rad_s, wheels.right_velocity_rad_s,
@@ -241,7 +241,6 @@ void controlTask(void *argument)
             current.dt_s, current.sample_age_us, current_saturated, current.valid,
         };
         if (context.telemetry_queue) { xQueueOverwrite(context.telemetry_queue, &snapshot); }
-#endif
         cycle_timing.stage=control::ControlStage::complete;
         cycle_timing.elapsed_us=esp_timer_get_time()-cycle_time_us;
         diagnostics::controlTiming(cycle_timing);

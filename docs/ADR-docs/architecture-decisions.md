@@ -159,7 +159,7 @@ flowchart LR
 
 **当前决策**
 
-启动检查母线电压后才创建控制任务；控制任务内部初始化IMU及电机并重置姿态估计器。电机运行采用单Iq PI与六扇区SVPWM，库BLDCMotor仅用于对齐；BSP独占ADC1并在公共GPIO12使能关闭时校准零偏。当前源码硬件确认门为true；该布尔值并不能替代缺失的实板验证证据。
+启动检查母线电压后才创建控制任务；控制任务内部初始化IMU及电机并重置姿态估计器。电机运行采用单Iq PI、PI后5ms Uq低通与六扇区SVPWM，库BLDCMotor仅用于对齐；BSP独占ADC1并在公共GPIO12使能关闭时校准零偏。当前源码硬件确认门为true；该布尔值并不能替代缺失的实板验证证据。
 
 **为什么这样设计**
 
@@ -200,7 +200,7 @@ flowchart LR
 
 **当前决策**
 
-定时器只发送通知；ControlTask检查命令、到期IMU与倾倒，再读编码器、运行到期外环，随后采电流并以本周期目标执行Iq PI与SVPWM；姿态按5ms绝对截止点、速度及偏航累计10ms更新。ControlTask持有独立平衡使能，初始化完成后以零速/零偏航目标运行；BLE仅提交速度/偏航目标，ControlTask检查300ms时效；无命令、断连或过期时采用零目标并继续平衡。首帧姿态直接以加速度计建立基准，倾倒检查先于首次电流输出。控制器使用函数和结构体；平衡电流优先分配，目标单位A。M0/M1的ForwardSign均为-1，按用户方向反馈同步反向目标电流与车辆轮速/Iq/Uq；FOC编码器对齐方向及相电流极性不随车辆映射改变，新的实板方向仍待验证。保留故障锁存停机。
+定时器只发送通知；ControlTask检查命令、到期IMU与倾倒，再读编码器、运行到期外环，随后采电流并以本周期目标执行Iq PI、Uq低通与SVPWM；姿态按5ms绝对截止点、速度及偏航累计10ms更新。ControlTask持有独立平衡使能，初始化完成后以零速/零偏航目标运行；BLE仅提交速度/偏航目标，ControlTask检查300ms时效；无命令、断连或过期时采用零目标并继续平衡。首帧姿态直接以加速度计建立基准，倾倒检查先于首次电流输出。控制器使用函数和结构体；平衡电流优先分配，目标单位A。M0/M1的ForwardSign均为-1，按用户方向反馈同步反向目标电流与车辆轮速/Iq/Uq；FOC编码器对齐方向及相电流极性不随车辆映射改变，新的实板方向仍待验证。保留故障锁存停机。
 
 **为什么这样设计**
 
@@ -208,7 +208,7 @@ flowchart LR
 
 **成立条件 / 约束**
 
-- Core 1优先级20，当前1000 Hz配置；电流PI按实际采样间隔运行，轮速按单圈角差计算；编码器读取耗时2ms、编码器到PWM年龄4ms、ADC读取耗时2ms、电流到PWM年龄2ms分别配置。4ms为用户授权的低速候选，不设实际轮速硬限；控制间隔保护10ms保留，新时序与闭环裕量未实测。
+- Core 1优先级20，当前500 Hz配置；姿态保持独立5ms绝对周期，电流PI按实际采样间隔运行，轮速按单圈角差计算；编码器读取耗时2ms、编码器到PWM年龄4ms、ADC读取耗时2ms、电流到PWM年龄2ms分别配置。倾倒硬停机门为相对平衡零点50度。4ms为用户授权的低速候选，不设实际轮速硬限；控制间隔保护10ms保留，新时序与闭环裕量未实测。
 
 **需要重新评估的情况**
 
@@ -242,18 +242,18 @@ BLE、Wi-Fi和遥测
 
 **当前决策**
 
-BleTask在Core0以优先级5运行，4096字节静态栈；初始化NimBLE后阻塞消费长度1原始报文队列。NimBLE回调只做GAP/GATT连接管理和报文复制；BleTask解析D命令、过滤重复/旧序号并转换为车辆速度/偏航rad/s。ControlTask通过第二个长度1静态队列接收MotionCommand，独立检查原始接收时刻，拒绝控制就绪前及满300ms的命令。
+BleTask在Core0以优先级5运行，4096字节静态栈；初始化NimBLE后阻塞消费长度1原始报文队列。NimBLE写回调只做GAP/GATT连接管理和报文复制；主机100ms callout读取共享遥测队列并通知订阅者；BleTask严格解析X,Y并按当前速度/偏航限值转换为rad/s。ControlTask通过第二个长度1静态队列接收MotionCommand，独立检查原始接收时刻，拒绝控制就绪前及满300ms的命令。
 
 **为什么这样设计**
 
-网络事件、解析及量纲转换不占控制周期；最新值覆盖避免旧驾驶目标积压，且控制仍能在BleTask饥饿时使目标过期。独立任务增加4096字节栈及TCB，实际余量需测量。无故障通知、错误编码器或BLE控制状态机，故障只由统一ErrorInfo链路维护。
+网络事件、解析及量纲转换不占控制周期；最新值覆盖避免旧驾驶目标积压，且控制仍能在BleTask饥饿时使目标过期。独立任务增加4096字节栈及TCB，实际余量需测量。BLE仅回传测量值与时效有效位，故障原因由统一ErrorInfo链路维护。NimBLE主机独占连接句柄、CCCD订阅状态和通知发送。
 
 **成立条件 / 约束**
 
-- 主服务.001只保留.006 WRITE特征，内容为D,seq,steering,throttle；百分比均±100，seq为uint16。新UUID避免旧ARM网页误操作新固件；GATT成功仅表示原始报文入队。
-- 网页20Hz串行写入，松手/失焦/后台发零目标，200ms写入超时主动断连；断连和控制侧命令过期归零但继续平衡。无ARM、无线停止/急停命令或状态回报。
-- 连接epoch改变时清空解析序号，排队不刷新接收时刻；初始化通过静态BleStartup队列报告，main最多等待6秒才决定放行控制。
-- TCP v2仍为21列，50ms非阻塞服务；CONFIG_VEHICLE_WIFI_ENABLED控制专用任务和资源。Wi-Fi/BLE使用WIFI_PS_MIN_MODEM。凭据不写入ADR。
+- 主服务.001提供.002 READ/WRITE命令，内容为X,Y、X,Y+LF或X,Y+CRLF，整数均±100，兼容成功版本网页；仅保留这一套命令协议。X正为右转、Y正为前进，映射到当前控制限值。GATT成功仅表示原始报文入队。
+- 网页20Hz串行写入，松手/失焦/后台发零目标，200ms写入超时主动断连；断连和控制侧命令过期归零但继续平衡。无ARM或无线急停；.007 READ/NOTIFY每100ms提供20字节小端遥测，包含版本、有效位、序号、采样时刻、俯仰角及左右轮速。网页无有效遥测不发非零目标；设备样本满500ms无效，网页600ms无新样本归零。
+- 连接epoch改变时清空运动目标，排队不刷新接收时刻；初始化通过静态BleStartup队列报告，main最多等待6秒才决定放行控制。
+- TCP v2仍为21列，100ms非阻塞服务；CONFIG_VEHICLE_WIFI_ENABLED只控制Wi-Fi任务和网络资源；共享遥测队列始终创建并发布，BLE与Wi-Fi均peek，不争抢快照。Wi-Fi/BLE使用WIFI_PS_MIN_MODEM。凭据不写入ADR。
 
 **需要重新评估的情况**
 
@@ -266,8 +266,10 @@ flowchart LR
     HTML --> NimBLE
     NimBLE -->|Incoming队列| BleTask
     BleTask -->|MotionCommand队列| ControlTask
-    ControlTask --> Queue
-    Queue --> TCP
+    ControlTask --> Queue[长度1遥测队列]
+    Queue -->|peek| NimBLE
+    NimBLE -->|Notify| HTML
+    Queue -->|peek| TCP
 ```
 
 **当前架构位置**
@@ -290,9 +292,9 @@ flowchart LR
 
 **当前决策**
 
-普通函数返回esp_err_t及调用者持有的ErrorInfo。先必要禁能，再锁存首故障和最后有效现场，次级禁能错误单独记录；不使用全局last_error。固定16条事件与独立首故障槽使用短临界区，序号表示提交顺序。BLE自身初始化/运行错误也使用ErrorInfo和同一事件环；不维护BLE专属错误快照或无线编码。g_diag_crash使用COREDUMP_DRAM_ATTR；Flash只在panic保存，启用NO_OVERWRITE，不自动擦除。
+统一错误类型及宏位于Middlewares/Diagnostics/error_info.hpp。BSP通过公开头文件目录引用该纯类型头文件，不调用诊断服务、不新增BSP对Middlewares的REQUIRES，保持两个顶层组件且无循环链接依赖。普通函数返回esp_err_t及调用者持有的ErrorInfo。先必要禁能，再锁存首故障和最后有效现场，次级禁能错误单独记录；不使用全局last_error。固定16条事件与独立首故障槽使用短临界区，序号表示提交顺序。BLE自身初始化/运行错误也使用ErrorInfo和同一事件环；不维护BLE专属错误快照或无线编码。g_diag_crash使用COREDUMP_DRAM_ATTR；Flash只在panic保存，启用NO_OVERWRITE，不自动擦除。
 
-串口运行诊断复用app_main每100ms观察首帧/首个平衡周期，首次平衡成功或故障后返回。运行中只写定长计时快照，balancing与driving分别表示平衡使能和目标时效有效，故障冻结当轮阶段与耗时，禁能并停止定时器后一次性打印。output_age使用用户授权的4ms编码器年龄门，新增current_output_age独立检查2ms电流年龄，两者在PWM前后检查并报告各自实测值；读取耗时仍分别限2ms，原始时间起点不变。4ms通过不等于1kHz周期验收。RAM布局schema=4，没有无线诊断schema。首轮控制/姿态dt显式初始化，后续继续按实际间隔保护。
+串口运行诊断复用app_main每100ms观察首帧/首个平衡周期，首次平衡成功或故障后返回。ControlTask运行中只写定长计时快照，balancing与driving分别表示平衡使能和目标时效有效，故障冻结当轮阶段与耗时，禁能并停止定时器后一次性打印。output_age使用用户授权的4ms编码器年龄门，current_output_age独立检查2ms电流年龄，两者在PWM前后检查并报告各自实测值；读取耗时仍分别限2ms，原始时间起点不变。4ms通过不等于500Hz周期验收。RAM布局schema=4，没有无线诊断schema。首轮控制/姿态dt显式初始化，后续继续按实际间隔保护。
 
 **为什么这样设计**
 

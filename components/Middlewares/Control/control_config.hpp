@@ -4,12 +4,12 @@ namespace vehicle {
 namespace control {
 namespace config {
 
-inline constexpr unsigned kAttitudeDivider = 5U;
+inline constexpr unsigned kAttitudePeriodUs = 5000U;
 inline constexpr float kOuterPeriodS = 0.010f;
 inline constexpr float kMaximumControlGapS = 0.010f;
 inline constexpr float kRadToDeg = 57.295779513f;
 inline constexpr float kDegToRad = 1.0f / kRadToDeg;
-inline constexpr float kFallAngleRad = 30.0f * kDegToRad;
+inline constexpr float kFallAngleRad = 50.0f * kDegToRad;
 inline constexpr float kGravityMps2 = 9.81f;
 inline constexpr float kWheelRadiusM = 0.04f;
 inline constexpr float kWheelTrackM = 0.18f;
@@ -33,7 +33,7 @@ inline constexpr float kYawAccelerationFeedforward = 0.0f;
 inline constexpr float kYawRateFeedforward = 0.0f;
 
 static_assert(kWheelRadiusM > 0.0f && kWheelTrackM > 0.0f);
-static_assert(kAttitudeDivider > 0U);
+static_assert(kAttitudePeriodUs > 0U);
 
 } // namespace config
 } // namespace control

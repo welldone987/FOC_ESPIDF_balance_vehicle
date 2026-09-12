@@ -220,9 +220,9 @@ flowchart LR
 
 ### 1. 项目概览
 
-DengFOC V4 / ESP32-WROOM-32原生ESP-IDF v6.0.2固件。app_main建立静态资源并启动任务；BleTask负责蓝牙初始化、命令解析及速度/偏航目标转换；ControlTask独占传感器、电机和故障停机；可选Wi-Fi任务输出TCP遥测。错误统一为BSP/Error/error_info.hpp中的ErrorInfo / ErrorPoint，不再提供BLE状态码或DIAG回传。
+DengFOC V4 / ESP32-WROOM-32原生ESP-IDF v6.0.2固件。app_main建立静态资源并启动任务；BleTask负责蓝牙初始化、命令解析及速度/偏航目标转换；ControlTask独占传感器、电机和故障停机；可选Wi-Fi任务输出TCP遥测。错误统一为Middlewares/Diagnostics/error_info.hpp中的ErrorInfo / ErrorPoint，BLE回传俯仰角/轮速及有效标志，不回传错误码或DIAG。
 
-电机执行量为iq电流，BSP采用显式Iq投影、单Iq PI与六扇区SVPWM；两轮车辆前进映射均为-1。控制周期目标1000us，姿态5000us，速度/偏航10000us。初始化完成后独立零速平衡，BLE只改变运动目标；断连/过期目标归零，故障锁存停机。硬件确认门当前true，但实板证据仍未验证。详见[三环控制](../codex/control/current_cascade_tuning.md)。
+电机执行量为iq电流，BSP采用显式Iq投影、单Iq PI、PI后Uq低通与六扇区SVPWM；两轮车辆前进映射均为-1。控制周期目标2000us，姿态5000us，速度/偏航10000us。初始化完成后独立零速平衡，BLE只改变运动目标；断连/过期目标归零，故障锁存停机。倾倒硬停机门为相对平衡零点50度。硬件确认门当前true，但实板证据仍未验证。详见[三环控制](../codex/control/current_cascade_tuning.md)。
 
 #### 整体关系图
 
@@ -233,7 +233,10 @@ flowchart LR
     BLE -->|MotionCommand队列| Control[ControlTask]
     Main --> Control
     Control --> BSP[IMU / Encoder / CurrentSensor / Motor]
-    Control -->|遥测队列| Wifi[Wi-Fi TCP]
+    Control -->|遥测覆盖| Telemetry[长度1遥测队列]
+    Telemetry -->|peek| Host
+    Host -->|10Hz Notify| HTML
+    Telemetry -->|peek| Wifi[Wi-Fi TCP]
     Control --> Diag[统一错误 / RAM / Core dump]
 ```
 
@@ -305,7 +308,7 @@ flowchart LR
 
 **Main Path**
 
-`定时器通知 → 命令队列 → 到期姿态/倾倒 → 编码器 → 外环 → 电流PI/SVPWM`
+`定时器通知 → 命令队列 → 到期姿态/倾倒 → 编码器 → 外环 → 电流PI/Uq低通/SVPWM`
 
 **输入**
 
@@ -325,13 +328,13 @@ flowchart LR
 
 **已知约束**
 
-- FOC使用本周期目标；1000Hz为目标而非实测保证。
+- FOC使用本周期目标；500Hz为目标而非实测保证。
 
 #### BLE速度与方向
 
 **功能职责**
 
-NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、阻塞接收、解析序号/百分比，换算为速度和偏航目标。
+NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、阻塞接收、解析X/Y百分比，换算为速度和偏航目标。
 
 **所属模块**
 
@@ -351,11 +354,12 @@ NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、阻塞接�
 
 **输入**
 
-- D,seq,steering,throttle及连接事件
+- X,Y（可带LF或CRLF）及连接事件；ControlTask的最新遥测快照
 
 **输出**
 
 - MotionCommand：rad/s速度、rad/s偏航、原始接收时刻、有效位
+- .007遥测：版本、有效标志、采样序号/时刻、俯仰角和左右轮速，固定20字节小端。
 
 **关键组件**
 
@@ -367,7 +371,7 @@ NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、阻塞接�
 
 **已知约束**
 
-- 服务.001；只保留.006 WRITE命令；无ARM、停止/急停命令、状态通知或错误回传。网页为docs/平衡车控制界面（新版）.html。
+- 服务.001；.002 READ/WRITE接收X,Y；.007 READ/NOTIFY提供20字节遥测。无ARM或无线急停。网页为docs/平衡车控制界面.html；协议见docs/codex/tasks/ble_motion_task.md。
 
 #### Wi-Fi遥测
 
@@ -409,7 +413,7 @@ NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、阻塞接�
 
 **已知约束**
 
-- 50ms服务周期；慢客户端约1秒后断开；总开关关闭时不创建专用资源。
+- 100ms服务周期；慢客户端约1秒后断开；Wi-Fi总开关关闭时不创建网络专用资源，共享遥测队列仍存在。
 
 #### 运行诊断
 
@@ -419,7 +423,7 @@ NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、阻塞接�
 
 **所属模块**
 
-`Middlewares/Diagnostics / BSP/Error`
+`Middlewares/Diagnostics`
 
 **Runtime Entry**
 
@@ -435,7 +439,7 @@ NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、阻塞接�
 
 **输入**
 
-- 初始化步骤、ErrorInfo、控制与计时快照
+- 初始化步骤、Diagnostics错误类型Info、控制与计时快照
 
 **输出**
 
@@ -479,17 +483,16 @@ NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、阻塞接�
 | --- | --- | --- | --- |
 | main | 一次启动和静态资源 | app_main | BSP、Middlewares、FreeRTOS |
 | BSP/Board | DengFOC V4 GPIO映射 | board::pins | ESP-IDF |
-| BSP/Error | 跨模块错误现场与稳定诊断编号 | ErrorInfo / ErrorPoint / VEHICLE_ERROR | ESP-IDF |
-| BSP/Power | 启动母线ADC与校准 | initialize / readBusVoltage | esp_adc、Board、Error |
-| BSP/IMU | BMI160与互补滤波 | initialize / readAttitude | i2c_bus、Board、Error |
-| BSP/Encoder | AS5600总线、角度缓存与SimpleFOC传感器接口 | CheckedEncoder | i2c_bus、Error、esp_simplefoc |
-| BSP/CurrentSensor | INA240 ADC、零点校准与三相电流重建 | initialize / read / release | esp_adc、Board、Error |
-| BSP/Motor | 电流PI、Iq滤波、SVPWM、对齐及输出 | initialize / runCurrentControl / inhibitOutputs | Encoder、CurrentSensor、esp_simplefoc、Board |
+| BSP/Power | 启动母线ADC与校准 | initialize / readBusVoltage | esp_adc、Board、Diagnostics错误类型 |
+| BSP/IMU | BMI160与互补滤波 | initialize / readAttitude | i2c_bus、Board、Diagnostics错误类型 |
+| BSP/Encoder | AS5600总线、角度缓存与SimpleFOC传感器接口 | CheckedEncoder | i2c_bus、Diagnostics错误类型、esp_simplefoc |
+| BSP/CurrentSensor | INA240 ADC、零点校准与三相电流重建 | initialize / read / release | esp_adc、Board、Diagnostics错误类型 |
+| BSP/Motor | 电流PI、Iq反馈与Uq输出滤波、SVPWM、对齐及输出 | initialize / runCurrentControl / inhibitOutputs | Encoder、CurrentSensor、esp_simplefoc、Board |
 | Middlewares/Control | 速度PI、姿态PD、平衡优先分配、命令时效及控制计时 | update / MotionCommand / ControlTiming | Motor执行器约束 |
 | Middlewares/FreeRTOS | 静态应用任务入口与调度 | bleTask / controlTask / wifiTelemetryTask | BSP、BLE、Control、Diagnostics |
 | Middlewares/BLE | GAP/GATT、原始报文队列与运动解析 | initialize / run | NimBLE、FreeRTOS、Control命令类型 |
 | Middlewares/wifi_telemtry | STA与TCP | initialize / service | Wi-Fi、lwIP |
-| Middlewares/Diagnostics | 首故障、事件环、计时与串口 | record / controlSnapshot / controlTiming | ErrorInfo、FreeRTOS、log |
+| Middlewares/Diagnostics | 统一错误类型/编号、首故障、事件环、计时与串口 | ErrorInfo / ErrorPoint / VEHICLE_ERROR / record / controlSnapshot / controlTiming | ESP-IDF、FreeRTOS、log |
 
 #### 模块依赖图
 
@@ -538,14 +541,17 @@ ESP-IDF管理调度器与NimBLE主机。BleTask先初始化服务并通过启动
 
 ```mermaid
 flowchart LR
-    HTML -->|20Hz D命令| Host[NimBLE主机]
+    HTML -->|20Hz X,Y命令| Host[NimBLE主机]
     Host -->|Incoming / xQueueOverwrite| Raw[长度1静态队列]
     Raw -->|阻塞xQueueReceive| BLE[BleTask]
     BLE -->|MotionCommand / xQueueOverwrite| Cmd[长度1静态队列]
     Cmd -->|非阻塞xQueueReceive| Control[ControlTask]
     Timer[ESP_TIMER_TASK] -->|TaskNotify| Control
     Control -->|本周期CurrentCommand| Motor[BSP]
-    Control -->|TelemetrySnapshot覆盖队列| Wifi[WifiTelemetryTask]
+    Control -->|TelemetrySnapshot覆盖| Telemetry[长度1遥测队列]
+    Telemetry -->|peek| Host
+    Host -->|10Hz Notify| HTML
+    Telemetry -->|peek| Wifi[WifiTelemetryTask]
     Wifi --> TCP
 ```
 
@@ -553,12 +559,12 @@ flowchart LR
 
 | 运行单元 | 所属模块 | 触发 / 频率 | 职责 | 同步 / 通信 |
 | --- | --- | --- | --- | --- |
-| app_main | main | 启动；每100ms观察首帧/平衡 | 分配静态资源，等待BLE结果，启动控制 | 启动队列，诊断短临界区 |
+| app_main | main | 启动时每100ms观察，首次平衡成功或故障后返回 | 分配静态资源，等待BLE结果，启动控制；报告首次控制与平衡状态 | 启动队列，诊断短临界区 |
 | BleTask | BLE / FreeRTOS | Core0、优先级5、4096字节栈、事件驱动 | 初始化BLE、解析和转换目标 | 原始队列阻塞receive、目标队列overwrite |
-| NimBLE主机 | ESP-IDF BLE | Core0、事件驱动 | GAP/GATT、广播/连接、复制报文 | 原始队列overwrite；初始化ready原子交接 |
-| ControlTask | FreeRTOS | Core1、优先级20、8192字节栈、目标1000Hz | 硬件、控制与故障处置 | ulTaskNotifyTake(pdTRUE)、目标非阻塞receive |
-| ESP_TIMER_TASK | ESP-IDF | 1000us请求 | 通知控制 | xTaskNotifyGive |
-| WifiTelemetryTask | FreeRTOS | Core0、优先级4、8192字节栈、50ms | 可选TCP服务 | vTaskDelayUntil、遥测队列peek |
+| NimBLE主机 | ESP-IDF BLE | Core0、事件驱动 | GAP/GATT、广播/连接、复制报文、100ms遥测通知 | 原始队列overwrite、遥测队列peek；初始化ready原子交接 |
+| ControlTask | FreeRTOS | Core1、优先级20、8192字节栈、目标500Hz | 硬件、控制与故障处置 | ulTaskNotifyTake(pdTRUE)、目标非阻塞receive |
+| ESP_TIMER_TASK | ESP-IDF | 2000us请求 | 通知控制 | xTaskNotifyGive |
+| WifiTelemetryTask | FreeRTOS | Core0、优先级4、8192字节栈、100ms | 可选TCP服务 | vTaskDelayUntil、遥测队列peek |
 | Wi-Fi/IP回调 | ESP-IDF | 事件驱动 | 连接事件 | 静态EventGroup |
 
 **关键数据**
@@ -571,11 +577,11 @@ flowchart LR
 | ControllerState | ControlTask | update | 控制任务独占 | 引用 |
 | WheelState / AttitudeSample | BSP | ControlTask | 本周期局部副本 | 同步函数 |
 | CurrentCommand | 控制器 | BSP电机 | 本周期局部 | runCurrentControl |
-| TelemetrySnapshot | ControlTask | Wi-Fi | main静态队列 | 长度1overwrite / peek |
+| TelemetrySnapshot | ControlTask | NimBLE主机、可选Wi-Fi | main静态队列；保留wifi_telemtry命名空间下的既有数据类型 | 长度1overwrite / peek |
 | TaskContext | main | 应用任务 | 文件静态生命周期 | 固定句柄 |
 | g_diag_crash | 启动/控制/通信错误记录 | 串口、Core dump | DRAM schema=4；首故障+16事件+控制/计时快照 | 短临界区；没有BLE副本 |
 
-Incoming和MotionCommand均为最新目标流，不是无损事件FIFO。连接epoch变化清空序号状态；重复/旧序号与非法报文不刷新目标时间。GATT写成功只代表已交给接收队列，不是执行确认。TCP v2维持21列、LF分帧及768字节部分发送缓冲。FreeRTOS为IDF双核端口V10.5.1、1000Hz tick、启用静态分配；栈单位按IDF为字节。
+Incoming和MotionCommand均为最新目标流，不是无损事件FIFO。连接epoch变化清空运动目标；非法报文不刷新目标时间。GATT写成功只代表已交给接收队列，不是执行确认。TCP v2维持21列、LF分帧及768字节部分发送缓冲。FreeRTOS为IDF双核端口V10.5.1、1000Hz tick、启用静态分配；栈单位按IDF为字节。
 
 ---
 
@@ -585,7 +591,7 @@ Incoming和MotionCommand均为最新目标流，不是无损事件FIFO。连接e
 | --- | --- | --- | --- | --- |
 | Unverified | BLE与调度 | 队列/协议静态核对；应用栈为初始预算 | 实机吞吐、端到端归零延迟、栈水位、丢周期 | BLE/Wi-Fi共存负载及断连/后台/快速重连台架测试 |
 | Unverified | 整机 | 软件构建与测试不证明电机安全或闭环稳定 | 对应固件实板结果 | 授权后限流电源/保护架测试 |
-| Unverified | 电流与时序 | 硬件确认门true；1000Hz电流/200Hz姿态及4ms编码器年龄为配置 | 相序、极性、采样同步、WCET与裕量 | 三环调试流程 |
+| Unverified | 电流与时序 | 硬件确认门true；500Hz电流/200Hz姿态及4ms编码器年龄为配置 | 相序、极性、采样同步、WCET与裕量 | 三环调试流程 |
 | Unverified | 传感器 | BMI160 ODR800Hz但软件读200Hz、未用FIFO | 混叠、样本年龄与同步 | 参考姿态及错误注入 |
 | Unverified | 故障与Core dump | ErrorInfo统一；RAM schema=4需匹配ELF | 实际禁能延迟、dump持久性和匹配解码 | 授权台架及维护命令 |
 | Unverified | 电源 | 仅启动欠压检查 | 运行电池衰减 | 台架电源测试 |

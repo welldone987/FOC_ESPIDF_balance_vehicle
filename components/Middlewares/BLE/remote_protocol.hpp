@@ -8,7 +8,6 @@ namespace vehicle {
 namespace ble {
 
 struct RemoteCommand {
-    std::uint16_t sequence{};
     std::int16_t steering{};
     std::int16_t throttle{};
 };
@@ -49,12 +48,12 @@ constexpr bool parseCommand(std::string_view text, RemoteCommand &out)
     int steering = 0;
     int throttle = 0;
     if (text.size() < 3 || text.size() > 20) { return false; }
-    if (text[offset++] != 'D') { return false; }
-    int sequence = 0;
-    if (!comma(text, offset) || offset == text.size() || text[offset] == '-' ||
-        !readInteger(text, offset, 65535, sequence)) { return false; }
-    parsed.sequence = static_cast<std::uint16_t>(sequence);
-    if (!comma(text, offset) || !readInteger(text, offset, 100, steering) ||
+    // 兼容成功版本的X,Y、X,Y\n和X,Y\r\n；其它尾随内容一律拒绝。
+    if (text.back() == '\n') {
+        text.remove_suffix(1);
+        if (!text.empty() && text.back() == '\r') { text.remove_suffix(1); }
+    }
+    if (!readInteger(text, offset, 100, steering) ||
          !comma(text, offset) || !readInteger(text, offset, 100, throttle)) {
         return false;
     }
@@ -63,12 +62,6 @@ constexpr bool parseCommand(std::string_view text, RemoteCommand &out)
     parsed.throttle = static_cast<std::int16_t>(throttle);
     out = parsed;
     return true;
-}
-
-constexpr bool newerSequence(std::uint16_t next, std::uint16_t previous)
-{
-    const auto delta = static_cast<std::uint16_t>(next - previous);
-    return delta != 0 && delta < 0x8000U;
 }
 
 } // namespace ble

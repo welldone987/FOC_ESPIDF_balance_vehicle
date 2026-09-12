@@ -4,7 +4,7 @@
 
 本文描述feature分支当前源码，验证产物基于80b777e之后的修复构建。初始化完成后，ControlTask以零速度/零偏航目标开始平衡，不等待BLE连接或ARM。BLE ARM只授权速度和转向目标。
 
-当前BMI160芯片ODR为800Hz，软件IMU读取/姿态环目标200Hz，速度/转向环目标100Hz，电流环仍请求1kHz。到期IMU和倾倒检查移到编码器之前。编码器到PWM年龄改为用户授权的4ms低速候选，新增独立2ms电流到PWM年龄保护；编码器和ADC批次读取耗时仍各限2ms。新时序未实板验证，本次不烧录。
+当前BMI160芯片ODR为800Hz，软件IMU读取/姿态环目标200Hz，速度/转向环目标100Hz，电流环请求500Hz。到期IMU和倾倒检查位于编码器之前。编码器到PWM年龄为用户授权的4ms低速候选，电流到PWM年龄保护为2ms；编码器和ADC批次读取耗时仍各限2ms。50度倾倒硬停机门、500Hz新时序与10Hz Wi-Fi服务尚未实板验证。
 
 当前M0/M1控制方向映射均为-1（vehicle_config.hpp），目标电流与轮速/Iq/Uq反馈同步反向；FOC对齐方向和相电流极性未改。启动换向自检属于对齐过程，不由这两个车辆前进符号决定。
 
@@ -33,7 +33,7 @@
 
 ```text
 CONTROL_START mode=INDEPENDENT_BALANCE; BLE ARM authorizes motion targets
-CONTROL_CONFIG current_period_us=1000 attitude_period_us=5000 outer_period_us=10000
+CONTROL_CONFIG current_period_us=2000 attitude_period_us=5000 outer_period_us=10000
 CONTROL_LIMITS encoder_output_max_age_us=4000 current_output_max_age_us=2000
 BOOT_SUMMARY OK
 CONTROL_LOOP_ALIVE first frame completed; first dt is nominal, not measured

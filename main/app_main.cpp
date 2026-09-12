@@ -19,9 +19,9 @@ std::uint8_t ble_startup_buffer[sizeof(vehicle::freertos_tasks::BleStartup)]{};
 StaticTask_t control_storage{};
 StackType_t control_stack[vehicle::freertos_tasks::kControlStackBytes]{};
 vehicle::freertos_tasks::TaskContext context{};
-#if CONFIG_VEHICLE_WIFI_ENABLED
 StaticQueue_t queue_storage{};
 std::uint8_t queue_buffer[sizeof(vehicle::wifi_telemtry::TelemetrySnapshot)]{};
+#if CONFIG_VEHICLE_WIFI_ENABLED
 StaticTask_t wifi_storage{};
 StackType_t wifi_stack[vehicle::freertos_tasks::kWifiStackBytes]{};
 #endif
@@ -77,8 +77,9 @@ extern "C" void app_main(void)
     }
     vehicle::diagnostics::boot(BootStep::ble,"BEGIN");
     context.command_queue=xQueueCreateStatic(1,sizeof(vehicle::control::MotionCommand),command_buffer,&command_storage);
+    context.telemetry_queue=xQueueCreateStatic(1,sizeof(vehicle::wifi_telemtry::TelemetrySnapshot),queue_buffer,&queue_storage);
     context.ble_startup_queue=xQueueCreateStatic(1,sizeof(vehicle::freertos_tasks::BleStartup),ble_startup_buffer,&ble_startup_storage);
-    if (!context.command_queue || !context.ble_startup_queue ||
+    if (!context.command_queue || !context.telemetry_queue || !context.ble_startup_queue ||
         !xTaskCreateStaticPinnedToCore(vehicle::freertos_tasks::bleTask,"BleTask",vehicle::freertos_tasks::kBleStackBytes,
             &context,vehicle::freertos_tasks::kBlePriority,ble_stack,&ble_storage,vehicle::freertos_tasks::kServiceCore)) {
         rc=VEHICLE_ERROR(&error,ESP_ERR_NO_MEM,boot_resource,application,0);
@@ -95,13 +96,9 @@ extern "C" void app_main(void)
     vehicle::diagnostics::boot(BootStep::wifi,"BEGIN");
     rc=vehicle::wifi_telemtry::initialize();
     if (rc == ESP_OK) {
-        context.telemetry_queue=xQueueCreateStatic(1,sizeof(vehicle::wifi_telemtry::TelemetrySnapshot),queue_buffer,&queue_storage);
-        if (!context.telemetry_queue) { rc=ESP_ERR_NO_MEM; }
-    }
-    if (rc == ESP_OK) {
         const auto task=xTaskCreateStaticPinnedToCore(vehicle::freertos_tasks::wifiTelemetryTask,"WifiTelemetryTask",
             vehicle::freertos_tasks::kWifiStackBytes,&context,vehicle::freertos_tasks::kWifiPriority,wifi_stack,&wifi_storage,vehicle::freertos_tasks::kServiceCore);
-        if (!task) { rc=ESP_ERR_NO_MEM; context.telemetry_queue=nullptr; }
+        if (!task) { rc=ESP_ERR_NO_MEM; }
     }
     if (rc != ESP_OK) { VEHICLE_ERROR(&error,rc,wifi_init,esp,rc); }
     finish(BootStep::wifi,rc,error,false);

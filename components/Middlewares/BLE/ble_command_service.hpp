@@ -5,7 +5,7 @@
 namespace vehicle {
 namespace ble {
 // 仅BleTask调用；初始化后持续消费NimBLE原始报文队列。
-esp_err_t initialize(ErrorInfo *error=nullptr);
+esp_err_t initialize(QueueHandle_t telemetry_queue, ErrorInfo *error=nullptr);
 void run(QueueHandle_t command_queue);
 } // namespace ble
 } // namespace vehicle

@@ -38,6 +38,9 @@ set(requires
     log
 )
 
+# BSP公共接口使用Diagnostics的纯错误类型头文件，不链接诊断服务。
+list(APPEND bsp_include_dirs "../Middlewares/Diagnostics")
+
 idf_component_register(
     SRCS ${bsp_srcs}
     INCLUDE_DIRS ${bsp_include_dirs}

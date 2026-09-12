@@ -2,6 +2,7 @@
 #include "diagnostics.hpp"
 #include "remote_protocol.hpp"
 #include "motion_command.hpp"
+#include "telemetry_protocol.hpp"
 #include <atomic>
 
 #include <cstdint>
@@ -31,13 +32,14 @@ namespace vehicle {
 namespace ble {
 namespace {
 
-// 独立命令UUID避免旧网页在缺少ARM握手时误发运动目标。
+// .002兼容成功版本的X,Y命令；.007为独立的20字节遥测协议。
 #define BALANCE_UUID_BYTES(id) \
     0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, \
     0x93, 0xf3, 0xa3, 0xb5, id, 0x00, 0x40, 0x6e
 ble_uuid128_t service_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x01));
-ble_uuid128_t command_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x06));
-ble_gatt_chr_def characteristics[2]{};
+ble_uuid128_t command_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x02));
+ble_uuid128_t telemetry_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x07));
+ble_gatt_chr_def characteristics[3]{};
 ble_gatt_svc_def services[2]{};
 struct Incoming {
     char text[20]{};
@@ -56,6 +58,40 @@ ErrorInfo ready_error{};
 bool initialized=false;
 std::uint8_t own_address_type=BLE_OWN_ADDR_PUBLIC;
 std::uint16_t connection_handle=BLE_HS_CONN_HANDLE_NONE;
+std::uint16_t telemetry_handle{};
+bool subscribed=false;
+QueueHandle_t telemetry_queue{};
+ble_npl_callout telemetry_timer{};
+
+TelemetryPacket latestTelemetry()
+{
+    wifi_telemtry::TelemetrySnapshot sample{};
+    const bool have=xQueuePeek(telemetry_queue,&sample,0)==pdTRUE;
+    return encodeTelemetry(have ? &sample : nullptr,esp_timer_get_time());
+}
+
+// 定时事件与GAP回调均在NimBLE主机执行，句柄/订阅状态不跨任务共享。
+void sendTelemetry(ble_npl_event *)
+{
+    if (subscribed && connection_handle!=BLE_HS_CONN_HANDLE_NONE) {
+        const auto packet=latestTelemetry();
+        auto *buffer=ble_hs_mbuf_from_flat(packet.data(),packet.size());
+        if (buffer) {
+            // NimBLE接管mbuf，发送失败也不能再次释放；拥塞时丢弃本帧。
+            (void)ble_gatts_notify_custom(connection_handle,telemetry_handle,buffer);
+        }
+    }
+    (void)ble_npl_callout_reset(&telemetry_timer,ble_npl_time_ms_to_ticks32(100));
+}
+
+int telemetryAccess(std::uint16_t, std::uint16_t, ble_gatt_access_ctxt *context, void *)
+{
+    if (!context || !context->om || context->op!=BLE_GATT_ACCESS_OP_READ_CHR) {
+        return BLE_ATT_ERR_READ_NOT_PERMITTED;
+    }
+    const auto packet=latestTelemetry();
+    return os_mbuf_append(context->om,packet.data(),packet.size())==0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+}
 void publishConnection(bool connected)
 {
     Incoming input{};
@@ -89,6 +125,7 @@ int gapEvent(ble_gap_event *event, void *)
                 return 0;
             }
             connection_handle = event->connect.conn_handle;
+            subscribed=false;
             publishConnection(true);
         } else {
             (void)startAdvertising();
@@ -98,12 +135,20 @@ int gapEvent(ble_gap_event *event, void *)
     case BLE_GAP_EVENT_DISCONNECT:
         if (event->disconnect.conn.conn_handle != connection_handle) { return 0; }
         connection_handle = BLE_HS_CONN_HANDLE_NONE;
+        subscribed=false;
         publishConnection(false);
         (void)startAdvertising();
         return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
         (void)startAdvertising();
+        return 0;
+
+    case BLE_GAP_EVENT_SUBSCRIBE:
+        if (event->subscribe.conn_handle==connection_handle &&
+            event->subscribe.attr_handle==telemetry_handle) {
+            subscribed=event->subscribe.cur_notify!=0;
+        }
         return 0;
 
     default:
@@ -157,6 +202,8 @@ void onReset(int reason)
 {
     rememberBle(reason,ErrorPoint::ble_reset);
     connection_handle = BLE_HS_CONN_HANDLE_NONE;
+    subscribed=false;
+    ble_npl_callout_stop(&telemetry_timer);
     publishConnection(false);
 }
 
@@ -167,6 +214,10 @@ void onSync()
     int rc = ble_hs_id_infer_auto(0, &own_address_type);
     if (rc) { VEHICLE_ERROR(&sync_error,ESP_FAIL,ble_address,nimble,rc); }
     else { rc=startAdvertising(&sync_error); }
+    if (!rc) {
+        rc=ble_npl_callout_reset(&telemetry_timer,ble_npl_time_ms_to_ticks32(100));
+        if (rc) { VEHICLE_ERROR(&sync_error,ESP_FAIL,ble_notify,nimble,rc); }
+    }
     if (ready.load(std::memory_order_acquire) == 0) {
         if (rc != 0) { ready_error=sync_error; }
         ready.store(rc == 0 ? 1 : -1,std::memory_order_release);
@@ -188,6 +239,10 @@ int characteristicAccess(std::uint16_t conn_handle,
                          void *)
 {
     if (context == nullptr || context->om == nullptr) { return BLE_ATT_ERR_UNLIKELY; }
+    if (context->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        constexpr char response[]="X,Y; range=-100..100";
+        return os_mbuf_append(context->om,response,sizeof(response)-1)==0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+    }
     if (context->op != BLE_GATT_ACCESS_OP_WRITE_CHR || conn_handle != connection_handle) {
         return BLE_ATT_ERR_WRITE_NOT_PERMITTED;
     }
@@ -210,12 +265,14 @@ int characteristicAccess(std::uint16_t conn_handle,
 
 } // namespace
 
-esp_err_t initialize(ErrorInfo *error)
+esp_err_t initialize(QueueHandle_t snapshots, ErrorInfo *error)
 {
     if (initialized) {
         return ESP_OK;
     }
 
+    if (!snapshots) { return VEHICLE_ERROR(error,ESP_ERR_INVALID_ARG,boot_resource,application,0); }
+    telemetry_queue=snapshots;
     incoming_queue=xQueueCreateStatic(1,sizeof(Incoming),incoming_buffer,&incoming_storage);
     if (!incoming_queue) { return VEHICLE_ERROR(error,ESP_ERR_NO_MEM,boot_resource,application,0); }
     const esp_err_t nimble_result = nimble_port_init();
@@ -228,7 +285,11 @@ esp_err_t initialize(ErrorInfo *error)
     // 建立命令特征和主服务定义。
     characteristics[0].uuid = &command_uuid.u;
     characteristics[0].access_cb = characteristicAccess;
-    characteristics[0].flags = BLE_GATT_CHR_F_WRITE;
+    characteristics[0].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE;
+    characteristics[1].uuid = &telemetry_uuid.u;
+    characteristics[1].access_cb = telemetryAccess;
+    characteristics[1].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY;
+    characteristics[1].val_handle = &telemetry_handle;
 
     services[0].type = BLE_GATT_SVC_TYPE_PRIMARY;
     services[0].uuid = &service_uuid.u;
@@ -252,6 +313,7 @@ esp_err_t initialize(ErrorInfo *error)
     ble_hs_cfg.reset_cb = onReset;
     ble_hs_cfg.sync_cb = onSync;
 
+    ble_npl_callout_init(&telemetry_timer,nimble_port_get_dflt_eventq(),sendTelemetry,nullptr);
     nimble_port_freertos_init(hostTask);
     const auto deadline=esp_timer_get_time()+5000000;
     while (ready.load(std::memory_order_acquire) == 0 && esp_timer_get_time()<deadline) { vTaskDelay(pdMS_TO_TICKS(10)); }
@@ -265,25 +327,19 @@ esp_err_t initialize(ErrorInfo *error)
 void run(QueueHandle_t command_queue)
 {
     std::uint32_t epoch{};
-    std::uint16_t sequence{};
-    bool have_sequence=false;
     for (;;) {
         Incoming input{};
         if (xQueueReceive(incoming_queue,&input,portMAX_DELAY) != pdTRUE) { continue; }
         if (input.epoch != epoch) {
             epoch=input.epoch;
-            have_sequence=false;
             const control::MotionCommand zero{};
             xQueueOverwrite(command_queue,&zero);
         }
         if (!input.connected || input.length == 0) { continue; }
         RemoteCommand parsed{};
-        if (!parseCommand(std::string_view(input.text,input.length),parsed) ||
-            (have_sequence && !newerSequence(parsed.sequence,sequence))) { continue; }
-        sequence=parsed.sequence;
-        have_sequence=true;
+        if (!parseCommand(std::string_view(input.text,input.length),parsed)) { continue; }
         const control::MotionCommand command{
-            parsed.throttle * config::kMaximumThrottleVelocityRadS / 100.0f,
+            parsed.throttle * control::config::kDriveSpeedLimitRadS / 100.0f,
             -parsed.steering * control::config::kYawRateLimitRadS / 100.0f,
             input.received_us,true};
         // 长度1最新值语义；过期判断使用接收时刻，不能因排队延长寿命。

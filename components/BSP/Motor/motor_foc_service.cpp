@@ -30,6 +30,7 @@ struct MotorState {
     float electrical_angle_rad;
     float velocity_rad_s;
     float iq_filtered_a;
+    float uq_filtered_v;
     bool current_filter_ready;
     CurrentPiState pi;
 };
@@ -96,9 +97,11 @@ MotorSample calculateCurrent(MotorState &state, const current_sensor::PhaseCurre
         config::kSvpwmLinearMargin * config::kPwmBusReferenceV / 1.7320508075688772f);
     const auto pi = updateCurrentPi(state.pi, forward_sign * reference_a - state.iq_filtered_a,
         dt_s, voltage_limit_v);
-    if (pi.valid) { duty = calculateSvpwmDuty(pi.applied_v, state.electrical_angle_rad, config::kPwmBusReferenceV); }
+    const float output_alpha = dt_s / (config::kCurrentOutputFilterS + dt_s);
+    state.uq_filtered_v += output_alpha * (pi.applied_v - state.uq_filtered_v);
+    if (pi.valid) { duty = calculateSvpwmDuty(state.uq_filtered_v, state.electrical_angle_rad, config::kPwmBusReferenceV); }
     // 遥测Iq与Uq转换为车辆前进坐标；相电流仍为桥臂到电机坐标。
-    return {reference_a, forward_sign * state.iq_filtered_a, forward_sign * pi.applied_v,
+    return {reference_a, forward_sign * state.iq_filtered_a, forward_sign * state.uq_filtered_v,
         phase.a, phase.b, phase.c, pi.saturated, requested_a != reference_a};
 }
 void writePwm(BLDCDriver3PWM &driver, const PhaseDuty &duty)
@@ -297,6 +300,7 @@ esp_err_t pauseOutputs(ErrorInfo *error)
     const auto rc = inhibitOutputs(error);
     left_state.pi = right_state.pi = {};
     left_state.iq_filtered_a = right_state.iq_filtered_a = 0.0f;
+    left_state.uq_filtered_v = right_state.uq_filtered_v = 0.0f;
     left_state.current_filter_ready = right_state.current_filter_ready = false;
     previous_current_us=0; wheel_sample_ready=false;
     return rc;

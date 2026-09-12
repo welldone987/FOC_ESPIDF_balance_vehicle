@@ -14,9 +14,7 @@ struct BleStartup { esp_err_t result{}; ErrorInfo error{}; };
 struct TaskContext {
     QueueHandle_t command_queue{};
     QueueHandle_t ble_startup_queue{};
-#if CONFIG_VEHICLE_WIFI_ENABLED
     QueueHandle_t telemetry_queue{};
-#endif
 };
 void bleTask(void *argument);
 void controlTask(void *argument);

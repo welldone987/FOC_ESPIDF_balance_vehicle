@@ -7,7 +7,7 @@ namespace vehicle {
 namespace motor {
 namespace config {
 
-inline constexpr std::uint32_t kControlRateHz = 1000U;
+inline constexpr std::uint32_t kControlRateHz = 500U;
 inline constexpr std::uint64_t kControlPeriodUs = 1000000ULL / kControlRateHz;
 inline constexpr float kMaximumControlGapS = 0.010f;
 inline constexpr int kPolePairs = 7;
@@ -25,6 +25,9 @@ inline constexpr float kCurrentKpVPerA = 5.0f;
 inline constexpr float kCurrentKiVPerAS = 200.0f;
 // kCurrentFilterS是电流PI输入端Iq一阶低通滤波时间常数，单位s。
 inline constexpr float kCurrentFilterS = 0.0005f;
+// kCurrentOutputFilterS是电流PI输出端Uq一阶低通滤波时间常数，单位s。
+// Lesson10源码写0.05s但注释为5ms；这里采用注释意图，避免给500Hz电流环引入50ms延迟。
+inline constexpr float kCurrentOutputFilterS = 0.005f;
 inline constexpr float kUqLimitV = 3.0f;
 inline constexpr float kSvpwmLinearMargin = 0.9f;
 
@@ -34,6 +37,7 @@ static_assert(kCurrentOutputMaxAgeUs >= ::vehicle::current_sensor::config::kRead
 static_assert(kUqLimitV > 0.0f && kPwmBusReferenceV > 0.0f);
 static_assert(kSvpwmLinearMargin > 0.0f && kSvpwmLinearMargin <= 1.0f);
 static_assert(kCurrentFilterS >= 0.0f);
+static_assert(kCurrentOutputFilterS > 0.0f);
 static_assert(kMotor0ForwardSign == 1.0f || kMotor0ForwardSign == -1.0f);
 static_assert(kMotor1ForwardSign == 1.0f || kMotor1ForwardSign == -1.0f);
 
