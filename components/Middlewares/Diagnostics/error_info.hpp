@@ -24,7 +24,7 @@ enum class ErrorPoint : std::uint16_t {
     imu_gyro_range, imu_gyro_conf, imu_foc_config, imu_foc_start, imu_foc_offset,
     control_gap=0x500, attitude_gap, fall, control_output, control_timer,
     ble_init=0x600, ble_name, ble_count, ble_services, ble_address=0x605,
-    ble_adv_fields, ble_scan_fields, ble_advertise, ble_ready_timeout, ble_reset,
+    ble_adv_fields, ble_scan_fields, ble_advertise, ble_ready_timeout, ble_reset, ble_notify,
     wifi_init=0x700
 };
 
