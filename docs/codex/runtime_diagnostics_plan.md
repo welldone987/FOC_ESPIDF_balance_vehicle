@@ -4,7 +4,7 @@
 
 ## 问题定义
 
-BOOT_SUMMARY OK仍在controlTask的for循环之前输出，随后allowControl。当前增加CONTROL_LOOP_ALIVE和CONTROL_BALANCE_ACTIVE提供首帧与首次平衡完成证据，运行期stopControl在禁能并停止定时器后打印完整故障。独立的CONTROL_READY连续运行验收门尚未实现。
+BOOT_SUMMARY OK仍在ControlTask的for循环之前输出，随后allowControl。当前增加CONTROL_LOOP_ALIVE和CONTROL_BALANCE_ACTIVE提供首帧与首次平衡完成证据，运行期StopControl在禁能并停止定时器后打印完整故障。独立的CONTROL_READY连续运行验收门尚未实现。
 
 保留BOOT_SUMMARY的含义：硬件/服务初始化成功；增加CONTROL_READY表示未驾驶状态下的周期链已经工作。串口负责把启动过程完整交接到CONTROL_READY，BLE负责之后的状态、事件和导出。驾驶电流环只有ARM后才执行，因此CONTROL_READY不能宣称电流闭环或车辆平衡已验证。
 
@@ -69,5 +69,5 @@ CONTROL_SUMMARY FAIL
 - 未ARM的台架验证首先通过；出现故障先读取首因，不先改PI、降频或放宽过流/时效保护。
 - ARM后的电流采样与PWM链需单独的受保护台架验证，测电流相序/极性、零偏、采样时效、1ms预算及Wi-Fi共存。CONTROL_READY不能替代这些验证。
 - 串口断开后，页面须能读取首次故障、最近有效状态并导出；复位前导出RAM，panic后使用匹配ELF提取Flash dump。
-- 启动观察者只解决READY之前的可见性。READY后的永久阻塞，需要另行评估既有看门狗的订阅、超时和安全禁能路径；不能声称BLE心跳观察或ControlTask内部stopControl能处理所有卡死。当前TASK_WDT_PANIC未开启，不保证每种卡死都会产生Core dump。
+- 启动观察者只解决READY之前的可见性。READY后的永久阻塞，需要另行评估既有看门狗的订阅、超时和安全禁能路径；不能声称BLE心跳观察或ControlTask内部StopControl能处理所有卡死。当前TASK_WDT_PANIC未开启，不保证每种卡死都会产生Core dump。
 - 固件变化后执行完整IDF构建、内存/栈检查，再进行授权后的实板验证。已实现部分以当前串口说明为准，不把本页后续设计视为硬件验证结论。

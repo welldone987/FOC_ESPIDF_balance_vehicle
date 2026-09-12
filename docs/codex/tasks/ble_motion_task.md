@@ -6,9 +6,9 @@
 - [x] 保留BleTask及两级最新命令队列，回调不访问电机；300ms命令时效由ControlTask独立检查，断连/过期目标归零但保持平衡。
 - [x] 名称“平衡车”，服务6e400001-b5a3-f393-e0a9-e50e24dcca9e。
 - [x] 命令6e400002-b5a3-f393-e0a9-e50e24dcca9e，READ/WRITE，普通带响应写入；载荷X,Y，可带LF或CRLF。X右正，Y前正；整数±100，拒绝多字段、溢出、非法字符与旧D命令。单次写入最多20字节。READ为接口说明。
-- [x] BLE按当前控制限速缩放：Y/100×kDriveSpeedLimitRadS，X/100×kYawRateLimitRadS；轮速目标为旧版25rad/s的80%=20rad/s，转向目标±2rad/s。
+- [x] BLE按当前控制限速缩放：Y/100×DriveSpeedLimit_rad_s，X/100×YawRateLimit_rad_s；轮速目标为旧版25rad/s的80%=20rad/s，转向目标±2rad/s。
 - [x] 遥测6e400007-b5a3-f393-e0a9-e50e24dcca9e，READ/NOTIFY，CCCD由NimBLE管理，100ms主机callout发送。连接句柄/订阅状态只归主机所有，断连/复位清空订阅；未订阅不发送，mbuf拥塞丢帧，不重试积压。
-- [x] main在BLE启动前创建唯一长度1遥测队列，ControlTask每周期overwrite，NimBLE和可选Wi-Fi均peek。Wi-Fi关闭仍发布；沿用现有wifi_telemtry::TelemetrySnapshot类型和TCP字段。
+- [x] main在BLE启动前创建唯一长度1遥测队列，ControlTask每周期overwrite，NimBLE和可选Wi-Fi均peek。Wi-Fi关闭仍发布；沿用现有wifi_telemetry::TelemetrySnapshot类型和TCP字段。
 - [x] 配套页面为[平衡车控制界面.html](../../平衡车控制界面.html)，50ms串行发送X,Y+LF，200ms操作延迟归零、1000ms操作超时断连，松手/失焦/后台清零；有有效遥测才允许非零目标。
 
 ## 20字节遥测格式

@@ -9,16 +9,20 @@ namespace vehicle {
 // ErrorDomain标识错误码来自应用、ESP-IDF、NimBLE或SimpleFOC。
 enum class ErrorDomain : std::uint8_t { application, esp, nimble, simplefoc };
 
-// ErrorPoint为启动、采样、控制和通信故障保留稳定的诊断编号。
+/*
+ * ErrorPoint为启动、采样、控制和通信故障保留稳定的诊断编号。
+ * 枚举顺序承载既有数值：driver/encoder/alignment/pi_svpwm的M1条目位置
+ * 对应原right_*编号，重命名时不能重排。
+ */
 enum class ErrorPoint : std::uint16_t {
     none=0, boot_resource=1, nvs=2, core_dump=3,
     power_map=0x100, power_unit, power_channel, power_calibration, power_raw, power_mv, undervoltage,
     current_unit=0x200, current_map, current_channel, current_calibration, current_raw,
     current_mv, current_range, current_timeout, offset_mean, offset_noise, phase_limit, reconstructed_limit, current_state,
-    motor_gate=0x300, enable_gpio, disable_gpio, left_driver, right_driver,
-    left_encoder_init, right_encoder_init, left_encoder_read, right_encoder_read,
-    right_alignment, left_alignment, wheel_dt, wheel_invalid, wheel_age, current_dt,
-    command_invalid, left_pi_svpwm, right_pi_svpwm, output_age, motor_state, current_output_age,
+    motor_gate=0x300, enable_gpio, disable_gpio, driver_M0, driver_M1,
+    encoder_init_M0, encoder_init_M1, encoder_read_M0, encoder_read_M1,
+    alignment_M1, alignment_M0, wheel_dt, wheel_invalid, wheel_age, current_dt,
+    command_invalid, pi_svpwm_M0, pi_svpwm_M1, output_age, motor_state, current_output_age,
     imu_bus=0x400, imu_device, imu_read, imu_write, imu_id, imu_pmu_timeout, imu_foc_timeout, imu_state, imu_filter,
     imu_soft_reset, imu_accel_normal, imu_gyro_normal, imu_accel_range, imu_accel_conf,
     imu_gyro_range, imu_gyro_conf, imu_foc_config, imu_foc_start, imu_foc_offset,
@@ -48,8 +52,8 @@ struct ErrorInfo {
     std::int8_t comparison{};
 };
 
-// errorAt()填写一帧ErrorInfo并透传原始esp_err_t。
-inline esp_err_t errorAt(ErrorInfo *out, esp_err_t code, ErrorPoint point,
+// ErrorAt()填写一帧ErrorInfo并透传原始esp_err_t。
+inline esp_err_t ErrorAt(ErrorInfo *out, esp_err_t code, ErrorPoint point,
     ErrorDomain domain, std::int32_t raw, const char *file, const char *function,
     std::uint32_t line, float value=0, float threshold=0, int channel=-1,
     std::uint8_t valid=0, std::int8_t comparison=0)
@@ -64,5 +68,5 @@ inline esp_err_t errorAt(ErrorInfo *out, esp_err_t code, ErrorPoint point,
 } // namespace vehicle
 
 #define VEHICLE_ERROR(out, code, point, domain, raw, ...) \
-    ::vehicle::errorAt(out, code, ::vehicle::ErrorPoint::point, ::vehicle::ErrorDomain::domain, raw, \
+    ::vehicle::ErrorAt(out, code, ::vehicle::ErrorPoint::point, ::vehicle::ErrorDomain::domain, raw, \
         __FILE__, __func__, __LINE__ __VA_OPT__(,) __VA_ARGS__)

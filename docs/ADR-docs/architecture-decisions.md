@@ -279,7 +279,7 @@ flowchart LR
 
 **当前依据与验证边界**
 
-- 依据：components/Middlewares/BLE/ble_command_service.cpp、ble_config.hpp、components/Middlewares/wifi_telemtry/wifi_telemtry.cpp、wifi_telemtry_config.hpp，项目AGENTS.md。
+- 依据：components/Middlewares/BLE/ble_command_service.cpp、ble_config.hpp、components/Middlewares/wifi_telemetry/wifi_telemetry.cpp、wifi_telemetry_config.hpp，项目AGENTS.md。
 - 已核对：当前源码、配置与调用关系；验证范围见docs/codex/tasks/ble_motion_task.md；旧诊断验证记录不代表当前固件。
 - 未确认 / 未验证：硬件实际行为、时限及故障恢复见[待验证项](./architecture.md#6-unknown--unverified)。
 

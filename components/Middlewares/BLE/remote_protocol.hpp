@@ -12,7 +12,7 @@ struct RemoteCommand {
     std::int16_t throttle{};
 };
 
-constexpr bool readInteger(std::string_view text, std::size_t &offset,
+constexpr bool ReadInteger(std::string_view text, std::size_t &offset,
                            int limit, int &value)
 {
     bool negative = false;
@@ -36,12 +36,12 @@ constexpr bool readInteger(std::string_view text, std::size_t &offset,
     return offset != begin;
 }
 
-constexpr bool comma(std::string_view text, std::size_t &offset)
+constexpr bool ConsumeComma(std::string_view text, std::size_t &offset)
 {
     return offset < text.size() && text[offset++] == ',';
 }
 
-constexpr bool parseCommand(std::string_view text, RemoteCommand &out)
+constexpr bool ParseCommand(std::string_view text, RemoteCommand &out)
 {
     RemoteCommand parsed{};
     std::size_t offset = 0;
@@ -53,8 +53,8 @@ constexpr bool parseCommand(std::string_view text, RemoteCommand &out)
         text.remove_suffix(1);
         if (!text.empty() && text.back() == '\r') { text.remove_suffix(1); }
     }
-    if (!readInteger(text, offset, 100, steering) ||
-         !comma(text, offset) || !readInteger(text, offset, 100, throttle)) {
+    if (!ReadInteger(text, offset, 100, steering) ||
+         !ConsumeComma(text, offset) || !ReadInteger(text, offset, 100, throttle)) {
         return false;
     }
     if (offset != text.size()) { return false; }

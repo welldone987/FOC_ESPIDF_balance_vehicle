@@ -14,12 +14,12 @@ struct Sample {
     std::int64_t started_us;
     bool valid;
 };
-// initialize()仅在公共使能关闭且无相电流时校准静态零点。
-esp_err_t initialize(ErrorInfo *error=nullptr);
-// read()读取两台电机的A/B相电流并重建C相电流。
-esp_err_t read(Sample *out, ErrorInfo *error=nullptr);
-// release()释放ADC校准、通道和一次性采样单元。
-void release();
+// Initialize()仅在公共使能关闭且无相电流时校准静态零点。
+esp_err_t Initialize(ErrorInfo *error=nullptr);
+// Read()读取两台电机的A/B相电流并重建C相电流。
+esp_err_t Read(Sample *out, ErrorInfo *error=nullptr);
+// Release()释放ADC校准、通道和一次性采样单元。
+void Release();
 
 } // namespace current_sensor
 } // namespace vehicle

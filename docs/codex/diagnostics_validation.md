@@ -25,7 +25,7 @@ v2命令解析、remote_control授权、状态codec与NimBLE生命周期/GATT处
 | 原始基线 | git archive HEAD的隔离源码，恢复原NO_OVERWRITE=n，ESP-IDF build size通过 |
 | 浮点保护 | 编译命令核对Motor四个源文件、IMU、Control、application_tasks均含-fno-fast-math |
 | Core dump符号 | g_diag_crash=904字节，完整位于_coredump_dram_start/end范围 |
-| Wi-Fi资源裁剪 | 关闭ELF中无wifiTelemetryTask及wifi_telemtry初始化符号 |
+| Wi-Fi资源裁剪 | 关闭ELF中无WifiTelemetryTask及wifi_telemetry初始化符号 |
 | 数学/参数/引脚/分区 | 对比HEAD：PI、SVPWM、balance_controller、vehicle_config、board_pins、partitions.csv未变 |
 | 差异格式 | git diff --check通过 |
 
@@ -49,6 +49,6 @@ QEMU编译真实生产源码，只有ADC/I²C/GPIO/驱动库依赖使用测试st
 
 全部未验证：GPIO12/22实物、电流相序/量程、上电/对齐/禁能、手机GATT缓存、MTU/订阅/重连/补发、Wi-Fi共存WCET、S/E/断连/超时延迟与输出行为、栈水位、Flash dump保存/匹配ELF解码/清除。
 
-当前源码kCurrentHardwareVerified原本为true，本次未修改；它不证明硬件已经验证。库对齐与同步总线操作仍限制软件故障关断时延。普通故障RAM记录掉电丢失；旧dump不覆盖会阻止新dump保存，需人工维护。Notify提交成功不表示客户端已持久保存。
+当前源码CurrentHardwareVerified原本为true，本次未修改；它不证明硬件已经验证。库对齐与同步总线操作仍限制软件故障关断时延。普通故障RAM记录掉电丢失；旧dump不覆盖会阻止新dump保存，需人工维护。Notify提交成功不表示客户端已持久保存。
 
 维护协议与命令见[diagnostics.md](./diagnostics.md)，测试复现见[tests/diagnostics/README.md](../../tests/diagnostics/README.md)。本地构建日志统一位于build/reports/diagnostics/，包括build_diag_v3_final.log、build_diag_wifi_off_final.log、build_diag_baseline_final.log、build_diag_qemu_final.log，未复制日志中的本机Wi-Fi配置到文档。

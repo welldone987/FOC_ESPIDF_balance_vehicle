@@ -20,8 +20,8 @@ struct ControlTiming {
     motor::CurrentTiming current{};
 };
 
-// sampleInterval()为首轮返回显式初始周期，后续返回相邻采样时刻差。
-constexpr std::int64_t sampleInterval(
+// SampleInterval()为首轮返回显式初始周期，后续返回相邻采样时刻差。
+constexpr std::int64_t SampleInterval(
     std::int64_t now, std::int64_t previous, std::int64_t initial)
 {
     return previous == 0 ? initial : now - previous;

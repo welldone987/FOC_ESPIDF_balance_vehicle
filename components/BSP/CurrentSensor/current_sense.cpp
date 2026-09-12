@@ -13,8 +13,8 @@ namespace vehicle {
 namespace current_sensor {
 namespace {
 constexpr std::array<gpio_num_t, 4> current_pins{
-    board::pins::kMotor0CurrentSenseOut1, board::pins::kMotor0CurrentSenseOut2,
-    board::pins::kMotor1CurrentSenseOut1, board::pins::kMotor1CurrentSenseOut2};
+    pins::current_sensor_out_a_M0, pins::current_sensor_out_b_M0,
+    pins::current_sensor_out_a_M1, pins::current_sensor_out_b_M1};
 adc_oneshot_unit_handle_t adc = nullptr;
 adc_cali_handle_t calibration = nullptr;
 bool ready=false;
@@ -22,7 +22,7 @@ std::array<adc_channel_t, 4> channels{};
 std::array<float, 4> offsets_mv{};
 
 std::int64_t sample_started_us = 0;
-esp_err_t readMillivolts(std::array<int, 4> &values, ErrorInfo *error)
+esp_err_t ReadMillivolts(std::array<int, 4> &values, ErrorInfo *error)
 {
     sample_started_us = esp_timer_get_time();
     for (unsigned i = 0; i < values.size(); ++i) {
@@ -31,24 +31,24 @@ esp_err_t readMillivolts(std::array<int, 4> &values, ErrorInfo *error)
         if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_raw, esp, result, raw, 0, i, 5); }
         result = adc_cali_raw_to_voltage(calibration, raw, &values[i]);
         if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_mv, esp, result, raw, 0, i, 5); }
-        if (values[i] < config::kAdcMinMv || values[i] > config::kAdcMaxMv) {
-            return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, current_range, application, 0, values[i], values[i] < config::kAdcMinMv ? config::kAdcMinMv : config::kAdcMaxMv, i, 7);
+        if (values[i] < AdcMin_mV || values[i] > AdcMax_mV) {
+            return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, current_range, application, 0, values[i], values[i] < AdcMin_mV ? AdcMin_mV : AdcMax_mV, i, 7);
         }
     }
-    return esp_timer_get_time() - sample_started_us <= config::kReadMaxDurationUs
-        ? ESP_OK : VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_timeout, application, 0, esp_timer_get_time()-sample_started_us, config::kReadMaxDurationUs, -1, 3, 1);
+    return esp_timer_get_time() - sample_started_us <= ReadMaxDuration_us
+        ? ESP_OK : VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_timeout, application, 0, esp_timer_get_time()-sample_started_us, ReadMaxDuration_us, -1, 3, 1);
 }
 
 } // namespace
 
-void release()
+void Release()
 {
     ready=false;
     if (calibration) { adc_cali_delete_scheme_line_fitting(calibration); calibration = nullptr; }
     if (adc) { adc_oneshot_del_unit(adc); adc = nullptr; }
 }
 
-esp_err_t initialize(ErrorInfo *error)
+esp_err_t Initialize(ErrorInfo *error)
 {
     ready=false;
     adc_oneshot_unit_init_cfg_t unit{};
@@ -69,16 +69,16 @@ esp_err_t initialize(ErrorInfo *error)
     cal.unit_id = ADC_UNIT_1;
     cal.atten = ADC_ATTEN_DB_12;
     cal.bitwidth = ADC_BITWIDTH_12;
-    cal.default_vref = config::kAdcDefaultVrefMv;
+    cal.default_vref = AdcDefaultVref_mV;
     result = adc_cali_create_scheme_line_fitting(&cal, &calibration);
     if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_calibration, esp, result); }
     std::array<int, 4> low{};
     std::array<int, 4> high{};
-    low.fill(config::kAdcMaxMv);
+    low.fill(AdcMax_mV);
     offsets_mv.fill(0.0f);
-    for (unsigned sample = 0; sample < config::kOffsetSamples; ++sample) {
+    for (unsigned sample = 0; sample < OffsetSamples; ++sample) {
         std::array<int, 4> mv{};
-        result = readMillivolts(mv, error);
+        result = ReadMillivolts(mv, error);
         if (result != ESP_OK) { return result; }
         for (unsigned i = 0; i < mv.size(); ++i) {
             offsets_mv[i] += mv[i];
@@ -88,38 +88,38 @@ esp_err_t initialize(ErrorInfo *error)
         vTaskDelay(1); // 仅启动零偏校准使用，驱动器保持关闭。
     }
     for (unsigned i = 0; i < offsets_mv.size(); ++i) {
-        offsets_mv[i] /= config::kOffsetSamples;
-        if (offsets_mv[i] < config::kOffsetMinMv ||
-            offsets_mv[i] > config::kOffsetMaxMv) {
-            return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, offset_mean, application, 0, offsets_mv[i], offsets_mv[i] < config::kOffsetMinMv ? config::kOffsetMinMv : config::kOffsetMaxMv, i, 7);
+        offsets_mv[i] /= OffsetSamples;
+        if (offsets_mv[i] < OffsetMin_mV ||
+            offsets_mv[i] > OffsetMax_mV) {
+            return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, offset_mean, application, 0, offsets_mv[i], offsets_mv[i] < OffsetMin_mV ? OffsetMin_mV : OffsetMax_mV, i, 7);
         }
     }
     for (unsigned i=0; i<offsets_mv.size(); ++i) {
-        if (high[i]-low[i] > config::kOffsetNoiseMv) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, offset_noise, application, 0, high[i]-low[i], config::kOffsetNoiseMv, i, 7, 1); }
+        if (high[i]-low[i] > OffsetNoise_mV) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, offset_noise, application, 0, high[i]-low[i], OffsetNoise_mV, i, 7, 1); }
     }
     ready=true;
     return ESP_OK;
 }
 
-esp_err_t read(Sample *out, ErrorInfo *error)
+esp_err_t Read(Sample *out, ErrorInfo *error)
 {
     std::array<int, 4> mv{};
     if (!out) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_ARG, current_raw, application, 0); }
     *out = {};
     if (!ready) { return VEHICLE_ERROR(error,ESP_ERR_INVALID_STATE,current_state,application,0); }
-    const esp_err_t rc = readMillivolts(mv, error);
+    const esp_err_t rc = ReadMillivolts(mv, error);
     if (rc != ESP_OK) { return rc; }
     std::array<float, 4> amps{};
     std::array<PhaseCurrents,2> phase_samples{};
     for (unsigned i = 0; i < amps.size(); ++i) {
-        amps[i] = (mv[i] - offsets_mv[i]) * 0.001f * config::kPolarity /
-            (config::kShuntOhm * config::kAmplifierGain);
-        if (!std::isfinite(amps[i]) || std::abs(amps[i]) > config::kPhaseTripA) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, phase_limit, application, 0, amps[i], config::kPhaseTripA, i, 7, 1); }
+        amps[i] = (mv[i] - offsets_mv[i]) * 0.001f * Polarity /
+            (Shunt_Ohm * AmplifierGain);
+        if (!std::isfinite(amps[i]) || std::abs(amps[i]) > PhaseTrip_A) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, phase_limit, application, 0, amps[i], PhaseTrip_A, i, 7, 1); }
     }
     for (unsigned i = 0; i < phase_samples.size(); ++i) {
         const float a = amps[2 * i];
         const float b = amps[2 * i + 1];
-        if (std::abs(a + b) > config::kPhaseTripA) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, reconstructed_limit, application, 0, -a-b, config::kPhaseTripA, i, 7, 1); }
+        if (std::abs(a + b) > PhaseTrip_A) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, reconstructed_limit, application, 0, -a-b, PhaseTrip_A, i, 7, 1); }
         // 两相测量重构第三相，仅用于保护，不建立Id环。
         phase_samples[i] = {a, b, -a - b};
     }

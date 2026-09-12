@@ -12,7 +12,7 @@ CheckedEncoder::CheckedEncoder(i2c_port_t port, gpio_num_t scl, gpio_num_t sda)
 {
 }
 
-esp_err_t CheckedEncoder::initialize(ErrorInfo *error, ErrorPoint point)
+esp_err_t CheckedEncoder::Initialize(ErrorInfo *error, ErrorPoint point)
 {
     i2c_config_t bus_config{};
     bus_config.mode = I2C_MODE_MASTER;
@@ -20,32 +20,32 @@ esp_err_t CheckedEncoder::initialize(ErrorInfo *error, ErrorPoint point)
     bus_config.scl_io_num = scl_;
     bus_config.sda_pullup_en = GPIO_PULLUP_ENABLE;
     bus_config.scl_pullup_en = GPIO_PULLUP_ENABLE;
-    bus_config.master.clk_speed = config::kI2cFrequencyHz;
+    bus_config.master.clk_speed = I2cFrequency_Hz;
     bus_ = i2c_bus_create(port_, &bus_config);
     if (bus_) {
-        device_ = i2c_bus_device_create(bus_, config::kAs5600Address, 0);
+        device_ = i2c_bus_device_create(bus_, As5600Address, 0);
     }
     if (!device_) {
         healthy_ = false;
-        return errorAt(error, ESP_FAIL, point, ErrorDomain::application, 0,
+        return ErrorAt(error, ESP_FAIL, point, ErrorDomain::application, 0,
             __FILE__, __func__, __LINE__);
     }
     Sensor::init();
     if (!healthy_) {
-        return errorAt(error, raw_error_, point, ErrorDomain::esp, raw_error_,
+        return ErrorAt(error, raw_error_, point, ErrorDomain::esp, raw_error_,
             __FILE__, __func__, __LINE__);
     }
     return ESP_OK;
 }
 
-bool CheckedEncoder::refresh()
+bool CheckedEncoder::Refresh()
 {
     if (!healthy_) {
         return false;
     }
     std::uint8_t raw[2]{};
     raw_error_ = i2c_bus_read_bytes(
-        device_, config::kAs5600RawAngleRegister, sizeof(raw), raw);
+        device_, As5600RawAngleRegister, sizeof(raw), raw);
     healthy_ = healthy_ && raw_error_ == ESP_OK;
     if (healthy_) {
         const unsigned count = ((raw[0] << 8) | raw[1]) & 0x0fff;
@@ -57,12 +57,12 @@ bool CheckedEncoder::refresh()
 float CheckedEncoder::getSensorAngle()
 {
     if (!cached_) {
-        refresh();
+        Refresh();
     }
     return healthy_ ? angle_rad_ : -1.0f;
 }
 
-void CheckedEncoder::setCached(bool cached)
+void CheckedEncoder::set_cached(bool cached)
 {
     cached_ = cached;
 }
@@ -72,12 +72,12 @@ bool CheckedEncoder::healthy() const
     return healthy_;
 }
 
-float CheckedEncoder::angleRad() const
+float CheckedEncoder::angle_rad() const
 {
     return angle_rad_;
 }
 
-esp_err_t CheckedEncoder::rawError() const
+esp_err_t CheckedEncoder::raw_error() const
 {
     return raw_error_;
 }

@@ -301,7 +301,7 @@ flowchart LR
 
 **Runtime Entry**
 
-`controlTask()`
+`ControlTask()`
 
 **Change Entry**
 
@@ -343,7 +343,7 @@ NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、最长100ms
 
 **Runtime Entry**
 
-`bleTask() / characteristicAccess() / gapEvent()`
+`ControlTask() / CharacteristicAccess() / GapEvent()`
 
 **Change Entry**
 
@@ -383,15 +383,15 @@ NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、最长100ms
 
 **所属模块**
 
-`Middlewares/wifi_telemtry`
+`Middlewares/wifi_telemetry`
 
 **Runtime Entry**
 
-`wifiTelemetryTask()`
+`WifiTelemetryTask()`
 
 **Change Entry**
 
-[components/Middlewares/wifi_telemtry/wifi_telemtry.cpp](../../components/Middlewares/wifi_telemtry/wifi_telemtry.cpp)
+[components/Middlewares/wifi_telemetry/wifi_telemetry.cpp](../../components/Middlewares/wifi_telemetry/wifi_telemetry.cpp)
 
 **Main Path**
 
@@ -407,7 +407,7 @@ NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、最长100ms
 
 **关键组件**
 
-- `components/Middlewares/wifi_telemtry/wifi_telemtry.cpp` — 功能入口与实现。
+- `components/Middlewares/wifi_telemetry/wifi_telemetry.cpp` — 功能入口与实现。
 
 **相关架构决策**
 
@@ -429,7 +429,7 @@ NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、最长100ms
 
 **Runtime Entry**
 
-`diagnostics::record() / observeControlStart() / readEvent()`
+`diagnostics::Record() / ObserveControlStart() / ReadEvent()`
 
 **Change Entry**
 
@@ -468,7 +468,7 @@ NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、最长100ms
 | 启动检查 | main/app_main.cpp | power → BleTask启动结果 → ControlTask | IDF构建；授权后台架 | 启动与硬件所有权 |
 | 控制算法 | balance_controller.cpp | control_config → application_tasks → motor | 故障注入与IDF构建；实板时序 | 控制调度与状态所有权 |
 | BLE和网页 | ble_command_service.cpp | HTML → BLE GATT/队列 → motion_command → ControlTask；Diagnostics → .008 | 编译期断言、网页测试、实机断连与诊断确认测试 | 通信与控制隔离 |
-| Wi-Fi/TCP | wifi_telemtry.cpp | Kconfig → 遥测队列 → service | 构建与实机共存 | 通信与控制隔离 |
+| Wi-Fi/TCP | wifi_telemetry.cpp | Kconfig → 遥测队列 → service | 构建与实机共存 | 通信与控制隔离 |
 | 错误规范 | error_info.hpp | diagnostics → 串口 / BLE .008 / Core dump | 故障注入、序号确认、匹配ELF检查 | 故障证据与持久化边界 |
 
 ---
@@ -484,17 +484,17 @@ NimBLE维护GAP/GATT并复制原始报文；BleTask初始化蓝牙、最长100ms
 | 模块 | 主要职责 | 对外入口 / 接口 | 依赖 |
 | --- | --- | --- | --- |
 | main | 一次启动和静态资源 | app_main | BSP、Middlewares、FreeRTOS |
-| BSP/Board | DengFOC V4 GPIO映射 | board::pins | ESP-IDF |
-| BSP/Power | 启动母线ADC与校准 | initialize / readBusVoltage | esp_adc、Board、Diagnostics错误类型 |
-| BSP/IMU | BMI160与互补滤波 | initialize / readAttitude | i2c_bus、Board、Diagnostics错误类型 |
+| BSP/Board | DengFOC V4 GPIO映射 | pins | ESP-IDF |
+| BSP/Power | 启动母线ADC与校准 | Initialize / ReadBusVoltage | esp_adc、Board、Diagnostics错误类型 |
+| BSP/IMU | BMI160与互补滤波 | Initialize / ReadAttitude | i2c_bus、Board、Diagnostics错误类型 |
 | BSP/Encoder | AS5600总线、角度缓存与SimpleFOC传感器接口 | CheckedEncoder | i2c_bus、Diagnostics错误类型、esp_simplefoc |
-| BSP/CurrentSensor | INA240 ADC、零点校准与三相电流重建 | initialize / read / release | esp_adc、Board、Diagnostics错误类型 |
-| BSP/Motor | 电流PI、Iq反馈滤波、SVPWM、对齐及输出（Uq输出滤波已旁路） | initialize / runCurrentControl / inhibitOutputs | Encoder、CurrentSensor、esp_simplefoc、Board |
-| Middlewares/Control | 速度PI、姿态PD、电流请求混合、命令时效及控制计时 | update / MotionCommand / ControlTiming | BSP电流环入口逐轮±1A约束 |
-| Middlewares/FreeRTOS | 静态应用任务入口与调度 | bleTask / controlTask / wifiTelemetryTask | BSP、BLE、Control、Diagnostics |
-| Middlewares/BLE | GAP/GATT、原始报文队列、运动解析、遥测通知与诊断读取/确认 | initialize / run | NimBLE、FreeRTOS、Control命令类型、Diagnostics |
-| Middlewares/wifi_telemtry | STA与TCP | initialize / service | Wi-Fi、lwIP |
-| Middlewares/Diagnostics | 统一错误类型/编号、首故障、事件环、计时与串口 | ErrorInfo / ErrorPoint / VEHICLE_ERROR / record / controlSnapshot / controlTiming | ESP-IDF、FreeRTOS、log |
+| BSP/CurrentSensor | INA240 ADC、零点校准与三相电流重建 | Initialize / Read / Release | esp_adc、Board、Diagnostics错误类型 |
+| BSP/Motor | 电流PI、Iq反馈滤波、SVPWM、对齐及输出（Uq输出滤波已旁路） | Initialize / RunCurrentControl / InhibitOutputs | Encoder、CurrentSensor、esp_simplefoc、Board |
+| Middlewares/Control | 速度PI、姿态PD、电流请求混合、命令时效及控制计时 | Update / MotionCommand / ControlTiming | BSP电流环入口逐轮±1A约束 |
+| Middlewares/FreeRTOS | 静态应用任务入口与调度 | BleTask / ControlTask / WifiTelemetryTask | BSP、BLE、Control、Diagnostics |
+| Middlewares/BLE | GAP/GATT、原始报文队列、运动解析、遥测通知与诊断读取/确认 | Initialize / Run | NimBLE、FreeRTOS、Control命令类型、Diagnostics |
+| Middlewares/wifi_telemetry | STA与TCP | Initialize / Service | Wi-Fi、lwIP |
+| Middlewares/Diagnostics | 统一错误类型/编号、首故障、事件环、计时与串口 | ErrorInfo / ErrorPoint / VEHICLE_ERROR / Record / CommitControlSnapshot / CommitControlTiming | ESP-IDF、FreeRTOS、log |
 
 #### 模块依赖图
 
@@ -578,10 +578,10 @@ flowchart LR
 | Incoming | NimBLE回调 | BleTask | BLE静态队列；固定20字节文本、长度、epoch、连接位和接收时间 | 长度1overwrite / receive，可合并中间目标 |
 | MotionCommand | BleTask | ControlTask | main静态队列；控制保留本地最后值 | 长度1overwrite / 非阻塞receive；不刷新原始时间 |
 | BleStartup | BleTask | app_main | main静态队列 | 一次结果/ErrorInfo副本，等待最多6秒 |
-| ControllerState | ControlTask | update | 控制任务独占 | 引用 |
+| ControllerState | ControlTask | Update | 控制任务独占 | 引用 |
 | WheelState / AttitudeSample | BSP | ControlTask | 本周期局部副本 | 同步函数 |
-| CurrentCommand | 控制器 | BSP电机 | 本周期局部 | runCurrentControl |
-| TelemetrySnapshot | ControlTask | NimBLE主机、可选Wi-Fi | main静态队列；保留wifi_telemtry命名空间下的既有数据类型 | 长度1overwrite / peek |
+| CurrentCommand | 控制器 | BSP电机 | 本周期局部 | RunCurrentControl |
+| TelemetrySnapshot | ControlTask | NimBLE主机、可选Wi-Fi | main静态队列；保留wifi_telemetry命名空间下的既有数据类型 | 长度1overwrite / peek |
 | TaskContext | main | 应用任务 | 文件静态生命周期 | 固定句柄 |
 | g_diag_crash | 启动/控制/通信错误记录 | 串口、Core dump | DRAM schema=4；首故障+16事件+控制/计时快照 | 短临界区；BLE只暂存一条待确认事件，不复制事件环 |
 

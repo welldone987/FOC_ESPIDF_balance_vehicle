@@ -68,21 +68,21 @@ ble_npl_callout telemetry_timer{};
 diagnostics::Event offered_event{};
 std::uint32_t diagnostic_cursor{}, serial_cursor{};
 bool replay_first_fault=true;
-char diagnostic_text[512]{"none"};
+char diagnostic_text[diagnostics::DiagnosticTextCapacity]{"none"};
 std::int64_t last_notify_error_us{};
 unsigned notify_failures{};
-void rememberBle(int rc, ErrorPoint point);
+void RememberBle(int rc, ErrorPoint point);
 
-void prepareDiagnostic()
+void PrepareDiagnostic()
 {
     if (offered_event.event_seq) { return; }
-    if (diagnostics::readEvent(diagnostic_cursor,offered_event,replay_first_fault)) {
+    if (diagnostics::ReadEvent(diagnostic_cursor,offered_event,replay_first_fault)) {
         if (!(offered_event.flags & 2)) { replay_first_fault=false; }
-        diagnostics::formatEvent(offered_event,diagnostic_text,sizeof(diagnostic_text));
+        diagnostics::FormatEvent(offered_event,diagnostic_text,sizeof(diagnostic_text));
     } else { std::strcpy(diagnostic_text,"none"); }
 }
 
-int diagnosticAccess(std::uint16_t conn, std::uint16_t, ble_gatt_access_ctxt *context, void *)
+int DiagnosticAccess(std::uint16_t conn, std::uint16_t, ble_gatt_access_ctxt *context, void *)
 {
     if (!context || !context->om || conn!=connection_handle) { return BLE_ATT_ERR_UNLIKELY; }
     if (context->op==BLE_GATT_ACCESS_OP_READ_CHR) {
@@ -100,49 +100,49 @@ int diagnosticAccess(std::uint16_t conn, std::uint16_t, ble_gatt_access_ctxt *co
     if (replay_first_fault) { replay_first_fault=false; }
     else { diagnostic_cursor=seq; }
     offered_event={};
-    prepareDiagnostic();
+    PrepareDiagnostic();
     return 0;
 }
 
-TelemetryPacket latestTelemetry()
+TelemetryPacket LatestTelemetry()
 {
-    wifi_telemtry::TelemetrySnapshot sample{};
+    wifi_telemetry::TelemetrySnapshot sample{};
     const bool have=xQueuePeek(telemetry_queue,&sample,0)==pdTRUE;
-    return encodeTelemetry(have ? &sample : nullptr,esp_timer_get_time());
+    return EncodeTelemetry(have ? &sample : nullptr,esp_timer_get_time());
 }
 
 // 定时事件与GAP回调均在NimBLE主机执行，句柄/订阅状态不跨任务共享。
-void sendTelemetry(ble_npl_event *)
+void SendTelemetry(ble_npl_event *)
 {
-    prepareDiagnostic();
+    PrepareDiagnostic();
     if (subscribed && connection_handle!=BLE_HS_CONN_HANDLE_NONE) {
-        const auto packet=latestTelemetry();
+        const auto packet=LatestTelemetry();
         auto *buffer=ble_hs_mbuf_from_flat(packet.data(),packet.size());
         // NimBLE接管mbuf，发送失败也不能再次释放。
         const int rc=buffer ? ble_gatts_notify_custom(connection_handle,telemetry_handle,buffer) : BLE_HS_ENOMEM;
         if (rc) {
             ++notify_failures;
             const auto now=esp_timer_get_time();
-            if (!last_notify_error_us || now-last_notify_error_us>=1000000) {
+            if (!last_notify_error_us || now-last_notify_error_us>=NotifyErrorThrottle_us) {
                 ErrorInfo error{};
                 VEHICLE_ERROR(&error,ESP_FAIL,ble_notify,nimble,rc,static_cast<float>(notify_failures),0,-1,1);
-                diagnostics::record(error);
+                diagnostics::Record(error);
                 last_notify_error_us=now;
             }
         }
     }
-    (void)ble_npl_callout_reset(&telemetry_timer,ble_npl_time_ms_to_ticks32(100));
+    (void)ble_npl_callout_reset(&telemetry_timer,ble_npl_time_ms_to_ticks32(NotifyPeriod_ms));
 }
 
-int telemetryAccess(std::uint16_t, std::uint16_t, ble_gatt_access_ctxt *context, void *)
+int TelemetryAccess(std::uint16_t, std::uint16_t, ble_gatt_access_ctxt *context, void *)
 {
     if (!context || !context->om || context->op!=BLE_GATT_ACCESS_OP_READ_CHR) {
         return BLE_ATT_ERR_READ_NOT_PERMITTED;
     }
-    const auto packet=latestTelemetry();
+    const auto packet=LatestTelemetry();
     return os_mbuf_append(context->om,packet.data(),packet.size())==0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
 }
-void publishConnection(bool connected)
+void PublishConnection(bool connected)
 {
     Incoming input{};
     input.epoch=++connection_epoch;
@@ -150,18 +150,18 @@ void publishConnection(bool connected)
     input.received_us=esp_timer_get_time();
     xQueueOverwrite(incoming_queue,&input);
 }
-void rememberBle(int rc, ErrorPoint point)
+void RememberBle(int rc, ErrorPoint point)
 {
     if (!rc) { return; }
     ErrorInfo error{};
-    errorAt(&error,ESP_FAIL,point,ErrorDomain::nimble,rc,__FILE__,__func__,__LINE__);
-    diagnostics::record(error);
+    ErrorAt(&error,ESP_FAIL,point,ErrorDomain::nimble,rc,__FILE__,__func__,__LINE__);
+    diagnostics::Record(error);
 }
 
-int startAdvertising(ErrorInfo *error=nullptr);
+int StartAdvertising(ErrorInfo *error=nullptr);
 
-// gapEvent()处理连接生命周期和广播结束事件。
-int gapEvent(ble_gap_event *event, void *)
+// GapEvent()处理连接生命周期和广播结束事件。
+int GapEvent(ble_gap_event *event, void *)
 {
     if (event == nullptr) {
         return 0;
@@ -175,17 +175,17 @@ int gapEvent(ble_gap_event *event, void *)
                 return 0;
             }
             connection_handle = event->connect.conn_handle;
-            diagnostic_cursor=0; offered_event={}; replay_first_fault=true; prepareDiagnostic();
+            diagnostic_cursor=0; offered_event={}; replay_first_fault=true; PrepareDiagnostic();
             ble_gap_conn_desc desc{};
             if (ble_gap_conn_find(connection_handle,&desc)==0) {
                 ESP_LOGI("ble","CONNECTED handle=%u interval_ms=%g latency=%u supervision_ms=%u",connection_handle,
                     desc.conn_itvl*1.25,desc.conn_latency,desc.supervision_timeout*10);
             }
             subscribed=false;
-            publishConnection(true);
+            PublishConnection(true);
         } else {
-            rememberBle(event->connect.status,ErrorPoint::ble_connect);
-            (void)startAdvertising();
+            RememberBle(event->connect.status,ErrorPoint::ble_connect);
+            (void)StartAdvertising();
         }
         return 0;
 
@@ -196,20 +196,20 @@ int gapEvent(ble_gap_event *event, void *)
             const auto &conn=event->disconnect.conn;
             VEHICLE_ERROR(&error,ESP_FAIL,ble_disconnect,nimble,event->disconnect.reason,
                 conn.conn_itvl*1.25f,conn.supervision_timeout*10.0f,conn.conn_latency,7);
-            diagnostics::record(error);
+            diagnostics::Record(error);
         }
         connection_handle = BLE_HS_CONN_HANDLE_NONE;
         subscribed=false;
-        publishConnection(false);
-        (void)startAdvertising();
+        PublishConnection(false);
+        (void)StartAdvertising();
         return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
-        (void)startAdvertising();
+        (void)StartAdvertising();
         return 0;
 
     case BLE_GAP_EVENT_CONN_UPDATE:
-        rememberBle(event->conn_update.status,ErrorPoint::ble_conn_update);
+        RememberBle(event->conn_update.status,ErrorPoint::ble_conn_update);
         {
             ble_gap_conn_desc desc{};
             if (ble_gap_conn_find(event->conn_update.conn_handle,&desc)==0) {
@@ -231,20 +231,20 @@ int gapEvent(ble_gap_event *event, void *)
     }
 }
 
-// startAdvertising()发布设备名和服务UUID，并启动可连接广播。
-int startAdvertising(ErrorInfo *error)
+// StartAdvertising()发布设备名和服务UUID，并启动可连接广播。
+int StartAdvertising(ErrorInfo *error)
 {
     ble_hs_adv_fields advertising_fields{};
     advertising_fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     advertising_fields.name = reinterpret_cast<std::uint8_t *>(
-        const_cast<char *>(config::kDeviceName));
-    advertising_fields.name_len = std::strlen(config::kDeviceName);
+        const_cast<char *>(DeviceName));
+    advertising_fields.name_len = std::strlen(DeviceName);
     advertising_fields.name_is_complete = 1U;
 
     int rc = ble_gap_adv_set_fields(&advertising_fields);
     if (rc != 0) {
         VEHICLE_ERROR(error,ESP_FAIL,ble_adv_fields,nimble,rc);
-        rememberBle(rc,ErrorPoint::ble_adv_fields);
+        RememberBle(rc,ErrorPoint::ble_adv_fields);
         return rc;
     }
 
@@ -256,7 +256,7 @@ int startAdvertising(ErrorInfo *error)
     rc = ble_gap_adv_rsp_set_fields(&scan_response_fields);
     if (rc != 0) {
         VEHICLE_ERROR(error,ESP_FAIL,ble_scan_fields,nimble,rc);
-        rememberBle(rc,ErrorPoint::ble_scan_fields);
+        RememberBle(rc,ErrorPoint::ble_scan_fields);
         return rc;
     }
 
@@ -265,50 +265,50 @@ int startAdvertising(ErrorInfo *error)
     parameters.disc_mode = BLE_GAP_DISC_MODE_GEN;
 
     rc = ble_gap_adv_start(
-        own_address_type, nullptr, BLE_HS_FOREVER, &parameters, gapEvent, nullptr);
+        own_address_type, nullptr, BLE_HS_FOREVER, &parameters, GapEvent, nullptr);
     if (rc == BLE_HS_EALREADY) { rc=0; }
     if (rc) { VEHICLE_ERROR(error,ESP_FAIL,ble_advertise,nimble,rc); }
-    rememberBle(rc,ErrorPoint::ble_advertise);
+    RememberBle(rc,ErrorPoint::ble_advertise);
     return rc;
 }
 
-// onReset()满足NimBLE复位回调接口；复位信息由上层诊断路径处理。
-void onReset(int reason)
+// OnReset()满足NimBLE复位回调接口；复位信息由上层诊断路径处理。
+void OnReset(int reason)
 {
-    rememberBle(reason,ErrorPoint::ble_reset);
+    RememberBle(reason,ErrorPoint::ble_reset);
     connection_handle = BLE_HS_CONN_HANDLE_NONE;
     subscribed=false;
     ble_npl_callout_stop(&telemetry_timer);
-    publishConnection(false);
+    PublishConnection(false);
 }
 
-// onSync()取得本机地址类型后开始广播。
-void onSync()
+// OnSync()取得本机地址类型后开始广播。
+void OnSync()
 {
     ErrorInfo sync_error{};
     int rc = ble_hs_id_infer_auto(0, &own_address_type);
     if (rc) { VEHICLE_ERROR(&sync_error,ESP_FAIL,ble_address,nimble,rc); }
-    else { rc=startAdvertising(&sync_error); }
+    else { rc=StartAdvertising(&sync_error); }
     if (!rc) {
-        rc=ble_npl_callout_reset(&telemetry_timer,ble_npl_time_ms_to_ticks32(100));
+        rc=ble_npl_callout_reset(&telemetry_timer,ble_npl_time_ms_to_ticks32(NotifyPeriod_ms));
         if (rc) { VEHICLE_ERROR(&sync_error,ESP_FAIL,ble_notify,nimble,rc); }
     }
     if (ready.load(std::memory_order_acquire) == 0) {
         if (rc != 0) { ready_error=sync_error; }
         ready.store(rc == 0 ? 1 : -1,std::memory_order_release);
     }
-    if (rc) { diagnostics::record(sync_error); }
+    if (rc) { diagnostics::Record(sync_error); }
 }
 
-// hostTask()运行NimBLE主机事件循环，退出后释放其FreeRTOS资源。
-void hostTask(void *)
+// HostTask()运行NimBLE主机事件循环，退出后释放其FreeRTOS资源。
+void HostTask(void *)
 {
     nimble_port_run();
     nimble_port_freertos_deinit();
 }
 
 // 一个WRITE复制一个固定长度报文；内容由BleTask严格解析。
-int characteristicAccess(std::uint16_t conn_handle,
+int CharacteristicAccess(std::uint16_t conn_handle,
                          std::uint16_t,
                          ble_gatt_access_ctxt *context,
                          void *)
@@ -324,12 +324,12 @@ int characteristicAccess(std::uint16_t conn_handle,
     Incoming input{};
     input.length=OS_MBUF_PKTLEN(context->om);
     if (input.length == 0 || input.length > sizeof(input.text)) {
-        rememberBle(BLE_HS_ATT_ERR(BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN),ErrorPoint::ble_command);
+        RememberBle(BLE_HS_ATT_ERR(BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN),ErrorPoint::ble_command);
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
     std::uint16_t copied{};
     if (ble_hs_mbuf_to_flat(context->om,input.text,input.length,&copied) != 0 || copied != input.length) {
-        rememberBle(BLE_HS_ATT_ERR(BLE_ATT_ERR_UNLIKELY),ErrorPoint::ble_command);
+        RememberBle(BLE_HS_ATT_ERR(BLE_ATT_ERR_UNLIKELY),ErrorPoint::ble_command);
         return BLE_ATT_ERR_UNLIKELY;
     }
     input.connected=true;
@@ -342,7 +342,7 @@ int characteristicAccess(std::uint16_t conn_handle,
 
 } // namespace
 
-esp_err_t initialize(QueueHandle_t snapshots, ErrorInfo *error)
+esp_err_t Initialize(QueueHandle_t snapshots, ErrorInfo *error)
 {
     if (initialized) {
         return ESP_OK;
@@ -361,21 +361,21 @@ esp_err_t initialize(QueueHandle_t snapshots, ErrorInfo *error)
     ble_svc_gatt_init();
     // 建立命令特征和主服务定义。
     characteristics[0].uuid = &command_uuid.u;
-    characteristics[0].access_cb = characteristicAccess;
+    characteristics[0].access_cb = CharacteristicAccess;
     characteristics[0].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE;
     characteristics[1].uuid = &telemetry_uuid.u;
-    characteristics[1].access_cb = telemetryAccess;
+    characteristics[1].access_cb = TelemetryAccess;
     characteristics[1].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY;
     characteristics[1].val_handle = &telemetry_handle;
     characteristics[2].uuid = &diagnostic_uuid.u;
-    characteristics[2].access_cb = diagnosticAccess;
+    characteristics[2].access_cb = DiagnosticAccess;
     characteristics[2].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE;
 
     services[0].type = BLE_GATT_SVC_TYPE_PRIMARY;
     services[0].uuid = &service_uuid.u;
     services[0].characteristics = characteristics;
 
-    int rc = ble_svc_gap_device_name_set(config::kDeviceName);
+    int rc = ble_svc_gap_device_name_set(DeviceName);
     if (rc != 0) {
         return VEHICLE_ERROR(error, ESP_FAIL, ble_name, nimble, rc);
     }
@@ -390,12 +390,12 @@ esp_err_t initialize(QueueHandle_t snapshots, ErrorInfo *error)
         return VEHICLE_ERROR(error, ESP_FAIL, ble_services, nimble, rc);
     }
 
-    ble_hs_cfg.reset_cb = onReset;
-    ble_hs_cfg.sync_cb = onSync;
+    ble_hs_cfg.reset_cb = OnReset;
+    ble_hs_cfg.sync_cb = OnSync;
 
-    ble_npl_callout_init(&telemetry_timer,nimble_port_get_dflt_eventq(),sendTelemetry,nullptr);
-    nimble_port_freertos_init(hostTask);
-    const auto deadline=esp_timer_get_time()+5000000;
+    ble_npl_callout_init(&telemetry_timer,nimble_port_get_dflt_eventq(),SendTelemetry,nullptr);
+    nimble_port_freertos_init(HostTask);
+    const auto deadline=esp_timer_get_time()+ReadyTimeout_us;
     while (ready.load(std::memory_order_acquire) == 0 && esp_timer_get_time()<deadline) { vTaskDelay(pdMS_TO_TICKS(10)); }
     const int state=ready.load(std::memory_order_acquire);
     if (state == 0) { return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, ble_ready_timeout, application, 0); }
@@ -404,7 +404,7 @@ esp_err_t initialize(QueueHandle_t snapshots, ErrorInfo *error)
     return ESP_OK;
 }
 
-void run(QueueHandle_t command_queue)
+void Run(QueueHandle_t command_queue)
 {
     std::uint32_t epoch{};
     std::int64_t next_serial_us{};
@@ -412,11 +412,11 @@ void run(QueueHandle_t command_queue)
         // 低优先级BleTask打印，避免串口吞吐占用NimBLE主机回调或ControlTask。
         const auto now=esp_timer_get_time();
         if (now>=next_serial_us) {
-            next_serial_us=now+100000;
+            next_serial_us=now+diagnostics::SerialReportPeriod_us;
             diagnostics::Event event{};
-            if (diagnostics::readEvent(serial_cursor,event)) {
-                char text[512]{};
-                diagnostics::formatEvent(event,text,sizeof(text));
+            if (diagnostics::ReadEvent(serial_cursor,event)) {
+                char text[diagnostics::DiagnosticTextCapacity]{};
+                diagnostics::FormatEvent(event,text,sizeof(text));
                 ESP_LOGW("diagnostic","%s",text);
                 serial_cursor=event.event_seq;
             }
@@ -430,18 +430,18 @@ void run(QueueHandle_t command_queue)
         }
         if (!input.connected || input.length == 0) { continue; }
         RemoteCommand parsed{};
-        if (!parseCommand(std::string_view(input.text,input.length),parsed)) {
+        if (!ParseCommand(std::string_view(input.text,input.length),parsed)) {
             ErrorInfo error{};
             VEHICLE_ERROR(&error,ESP_ERR_INVALID_ARG,ble_command,application,0,static_cast<float>(input.length),20,-1,3);
-            diagnostics::record(error);
+            diagnostics::Record(error);
             // 无效输入不能让旧非零目标继续有效。
             const control::MotionCommand zero{};
             xQueueOverwrite(command_queue,&zero);
             continue;
         }
         const control::MotionCommand command{
-            parsed.throttle * control::config::kDriveSpeedLimitRadS / 100.0f,
-            parsed.steering * control::config::kYawRateLimitRadS / 100.0f,
+            parsed.throttle * control::DriveSpeedLimit_rad_s / 100.0f,
+            parsed.steering * control::YawRateLimit_rad_s / 100.0f,
             input.received_us,true};
         // 长度1最新值语义；过期判断使用接收时刻，不能因排队延长寿命。
         xQueueOverwrite(command_queue,&command);

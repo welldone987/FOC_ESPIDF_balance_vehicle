@@ -28,7 +28,7 @@ Native ESP-IDF firmware for a two-wheel self-balancing vehicle based on the **De
 
 PWM is M0 `32/33/25` and M1 `26/27/14`; both drivers share active-high enable GPIO12. The AS5600 buses use SDA/SCL `19/18` and `23/5`; phase-current ADC inputs are M0 `39/36` and M1 `35/34`. All GPIO assignments are centralized in `components/BSP/Board/board_pins.hpp`.
 
-The source currently sets `kCurrentHardwareVerified=true`, which permits GPIO12 enable and right-then-left motor alignment during startup. This is a software gate, not evidence that phase order, current polarity, timing or vehicle stability has been verified on hardware. Alignment can move the wheels and runs before periodic current protection is active.
+The source currently sets `CurrentHardwareVerified=true`, which permits GPIO12 enable and right-then-left motor alignment during startup. This is a software gate, not evidence that phase order, current polarity, timing or vehicle stability has been verified on hardware. Alignment can move the wheels and runs before periodic current protection is active.
 
 ## Project Layout
 
