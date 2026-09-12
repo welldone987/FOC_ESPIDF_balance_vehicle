@@ -12,20 +12,32 @@
 #include "sdkconfig.h"
 
 namespace {
+/*
+ * app_main建立静态任务与队列，按固定顺序完成启动检查。
+ * 必要步骤失败时禁用输出并锁存诊断；可选Wi-Fi失败只降级。
+ * BleTask就绪后才创建ControlTask并进入低频观察。
+ */
+// ble_storage和ble_stack是BleTask的静态TCB与栈。
 StaticTask_t ble_storage{};
 StackType_t ble_stack[vehicle::freertos_tasks::BleStackBytes]{};
+// command_storage等四组缓冲是命令队列与BLE启动结果的长度1静态队列。
 StaticQueue_t command_storage{}, ble_startup_storage{};
 std::uint8_t command_buffer[sizeof(vehicle::control::MotionCommand)]{};
 std::uint8_t ble_startup_buffer[sizeof(vehicle::freertos_tasks::BleStartup)]{};
+// control_storage和control_stack是ControlTask的静态TCB与栈。
 StaticTask_t control_storage{};
 StackType_t control_stack[vehicle::freertos_tasks::ControlStackBytes]{};
+// context保存三个队列句柄，供任务创建时传入。
 vehicle::freertos_tasks::TaskContext context{};
+// queue_storage和queue_buffer是遥测快照的长度1静态队列。
 StaticQueue_t queue_storage{};
 std::uint8_t queue_buffer[sizeof(vehicle::wifi_telemetry::TelemetrySnapshot)]{};
 #if CONFIG_VEHICLE_WIFI_ENABLED
+// wifi_storage和wifi_stack是可选Wi-Fi服务任务的静态TCB与栈。
 StaticTask_t wifi_storage{};
 StackType_t wifi_stack[vehicle::freertos_tasks::WifiStackBytes]{};
 #endif
+// Finish()在启动步骤失败时禁用输出、记录诊断并返回false。
 bool Finish(vehicle::diagnostics::BootStep step, esp_err_t rc,
     const vehicle::ErrorInfo &error, bool required=true)
 {
@@ -45,7 +57,7 @@ extern "C" void app_main(void)
 {
     using vehicle::diagnostics::BootStep;
     vehicle::ErrorInfo error{};
-    // First hardware action establishes safe output. Static diagnostic storage needs no allocation.
+    // 首个硬件操作先建立安全输出，静态诊断区无需动态分配。
     auto rc=vehicle::motor::InhibitOutputs(&error);
     vehicle::diagnostics::Initialize();
     vehicle::diagnostics::Boot(BootStep::safe_output,"BEGIN");
@@ -71,6 +83,7 @@ extern "C" void app_main(void)
     rc=esp_core_dump_image_get(&address,&size);
     if (rc == ESP_OK) { rc=esp_core_dump_image_check(); }
     if (rc == ESP_ERR_NOT_FOUND) {
+        // 无历史dump时跳过检查，不阻塞启动。
         vehicle::diagnostics::Boot(BootStep::core_dump,"SKIP",rc);
     } else {
         if (rc != ESP_OK) { VEHICLE_ERROR(&error,rc,core_dump,esp,rc); }
@@ -88,7 +101,8 @@ extern "C" void app_main(void)
         return;
     }
     vehicle::freertos_tasks::BleStartup startup{};
-    // BleTask完成首次广播后才放行控制初始化；结果也通过静态队列传递。
+    // BleTask完成首次广播后才放行控制初始化。
+    // 初始化结果也通过静态队列传递。
     if (xQueueReceive(context.ble_startup_queue,&startup,pdMS_TO_TICKS(vehicle::ble::StartupWait_ms)) != pdTRUE) {
         startup.result=VEHICLE_ERROR(&startup.error,ESP_ERR_TIMEOUT,ble_ready_timeout,application,0);
     }

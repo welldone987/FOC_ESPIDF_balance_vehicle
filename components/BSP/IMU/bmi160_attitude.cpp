@@ -19,8 +19,10 @@ namespace {
  * ReadAttitude()把I2C原始帧转换为物理量，再用时间戳维护互补滤波状态。
  */
 
+// Pi把atan2结果的弧度换算为度。
 constexpr float Pi = 3.14159265358979323846f;
 
+// 以下常量是BMI160数据手册的寄存器地址。
 constexpr std::uint8_t RegChipId = 0x00U;
 constexpr std::uint8_t RegPmuStatus = 0x03U;
 constexpr std::uint8_t RegGyroData = 0x0CU;
@@ -33,6 +35,7 @@ constexpr std::uint8_t RegFocConf = 0x69U;
 constexpr std::uint8_t RegOffset6 = 0x77U;
 constexpr std::uint8_t RegCmd = 0x7EU;
 
+// 以下常量是BMI160的命令值和配置位掩码。
 constexpr std::uint8_t ChipId = 0xD1U;
 constexpr std::uint8_t CmdSoftReset = 0xB6U;
 constexpr std::uint8_t CmdAccelNormal = 0x11U;
@@ -48,13 +51,16 @@ constexpr std::uint8_t GyroRange1000Dps = 0x01U;
 constexpr std::uint8_t OdrMask = 0x0FU;
 constexpr std::uint8_t Odr800Hz = 0x0BU;
 
-// bus和device保持BMI160共享I2C0总线的模块级句柄。
+// bus保存BMI160与M0编码器共享的I2C0总线句柄。
 i2c_bus_handle_t bus = nullptr;
+// device保存BMI160设备句柄。
 i2c_bus_device_handle_t device = nullptr;
-// initialized控制公开读数接口是否允许访问传感器。
+// initialized为true后ReadAttitude()才允许访问传感器。
 bool initialized = false;
-// last_pitch_deg和previous_sample_us保存互补滤波器的跨周期状态。
+// last_pitch_deg保存最近一次互补滤波输出的俯仰角，单位deg。
 float last_pitch_deg = 0.0f;
+// previous_sample_us保存上一帧采样时刻。
+// previous_sample_us为0表示尚未建立基准。
 std::int64_t previous_sample_us = 0;
 
 // ReadRegister()从BMI160指定寄存器读取一个字节。
@@ -231,7 +237,8 @@ esp_err_t Initialize(ErrorInfo *error)
         return result;
     }
 
-    // 量程为±2g和±1000dps；芯片ODR为800Hz，ControlTask按200Hz读取最新帧。
+    // 量程为±2g和±1000dps，芯片ODR为800Hz。
+    // ControlTask按200Hz读取最新帧。
     // 只替换ODR低四位，保留配置寄存器中的滤波带宽位。
     result = WriteRegister(RegAccelRange, AccelRange2G, error);
     if (result != ESP_OK) {
@@ -316,7 +323,7 @@ esp_err_t ReadAttitude(AttitudeSample *out, ErrorInfo *error)
     }
 
     // 陀螺仪积分提供短期响应，加速度计角度修正长期漂移。
-    // 独立平衡可能立即启动，首帧用测得姿态建基准，不能从0缓慢爬升后才发现倾倒。
+    // 独立平衡在初始化完成后立即启动，首帧用测得姿态建基准，不能从0缓慢爬升后才发现倾倒。
     const float gyro_weight = ComplementaryTimeConstant_s /
         (ComplementaryTimeConstant_s + interval_s);
     const float next_pitch_deg = previous_sample_us == 0 ? accelerometer_pitch_deg :

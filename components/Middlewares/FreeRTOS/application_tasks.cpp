@@ -27,9 +27,12 @@ namespace {
  * 初始化完成后开始本地零速平衡；BleTask只提供速度和转向目标。
  */
 
+// control_timer是周期通知控制任务的ESP定时器句柄。
 esp_timer_handle_t control_timer{};
-// 仅ControlTask访问；运行中不格式化日志，完成/故障时复制定长现场。
+// 仅ControlTask访问。
+// 运行中不格式化日志，完成/故障时复制定长现场。
 control::ControlTiming cycle_timing{};
+// cycle_started_us记录本轮开始的时刻，单位us。
 std::int64_t cycle_started_us{};
 
 
@@ -44,7 +47,8 @@ std::int64_t cycle_started_us{};
     if (rc != ESP_OK) { diagnostics::Record(secondary); }
     motor::DisableOutputs();
     if (control_timer) { esp_timer_stop(control_timer); }
-    // 输出已禁能，定时器已停止；一次性串口报告不占用运行周期预算。
+    // 此时输出已禁能、定时器已停止。
+    // 一次性串口报告不占用运行周期预算。
     diagnostics::PrintControlFault(error);
     if (rc != ESP_OK) {
         ESP_LOGE("control_diag","CONTROL_SECONDARY disable request failed: code=%s raw=%ld file=%s:%lu",
@@ -56,6 +60,7 @@ std::int64_t cycle_started_us{};
     }
     for (;;) { vTaskDelay(pdMS_TO_TICKS(1000U)); }
 }
+// BootResult()在启动步骤失败时转入锁存停机，否则输出启动日志。
 void BootResult(diagnostics::BootStep step, esp_err_t rc, const ErrorInfo &error)
 {
     if (rc != ESP_OK) { StopControl(error,true); }
@@ -70,6 +75,7 @@ void ReleaseControl(void *task_handle)
 
 } // namespace
 
+// BleTask初始化BLE并把结果写入启动队列，随后进入报文消费循环。
 void BleTask(void *argument)
 {
     auto &context=*static_cast<TaskContext *>(argument);
@@ -77,10 +83,12 @@ void BleTask(void *argument)
     startup.result=ble::Initialize(context.telemetry_queue,&startup.error);
     xQueueOverwrite(context.ble_startup_queue,&startup);
     if (startup.result == ESP_OK) { ble::Run(context.command_queue); }
-    // 初始化失败不重试，也不放行控制；静态任务资源保留供诊断。
+    // 初始化失败不重试，也不放行控制。
+    // 静态任务资源保留供诊断。
     for (;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }
 }
 
+// ControlTask完成硬件初始化、启动控制定时器并进入500Hz控制循环。
 void ControlTask(void *argument)
 {
     // context由app_main提供，在整个静态任务生命周期内保持有效。
@@ -89,6 +97,7 @@ void ControlTask(void *argument)
     control::ControllerState controller{};
     control::Initialize(controller);
 
+    // error在各初始化步骤和周期故障中复用。
     ErrorInfo error{};
     diagnostics::Boot(diagnostics::BootStep::imu,"BEGIN");
     esp_err_t result=imu::Initialize(&error);
@@ -129,18 +138,26 @@ void ControlTask(void *argument)
     diagnostics::Boot(diagnostics::BootStep::complete,"OK");
     ESP_LOGI("boot","BOOT_SUMMARY OK");
     diagnostics::CompleteBoot();
+    // command_ready_us之后的命令才被采纳，用于拒绝初始化期间的目标。
     const auto command_ready_us=esp_timer_get_time();
+    // latest_command保存最近接收的运动目标。
     control::MotionCommand latest_command{};
 
+    // sequence、balance_cycles和skipped_releases记录周期与通知统计。
     std::uint32_t sequence = 0U;
     std::uint32_t balance_cycles=0U, skipped_releases=0U;
+    // was_balancing和was_driving保存上一轮的使能与目标状态。
     bool was_balancing = false;
     bool was_driving = false;
+    // current_saturated汇总本周期电流环饱和，供外环冻结积分。
     bool current_saturated = false;
+    // previous_cycle_us、previous_attitude_us和next_attitude_us维护控制与姿态的时间基准。
     std::int64_t previous_cycle_us = 0;
     std::int64_t previous_attitude_us = previous_cycle_us;
     std::int64_t next_attitude_us = previous_cycle_us;
+    // attitude保存最近一帧姿态估计。
     imu::AttitudeSample attitude{};
+    // output保存外环最近一次输出。
     control::ControlOutput output{};
     for (;;) {
         const auto notifications=ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -156,7 +173,8 @@ void ControlTask(void *argument)
         previous_cycle_us = cycle_time_us;
         cycle_timing.stage=control::ControlStage::command;
         if (!(cycle_dt_s > 0.0f && cycle_dt_s <= control::MaximumControlGap_s)) { VEHICLE_ERROR(&error, ESP_ERR_TIMEOUT, control_gap, application, 0, cycle_dt_s, control::MaximumControlGap_s, -1, 3, 1); StopControl(error); }
-        // 非阻塞读取最新目标；ControlTask独立检查时效，包括BleTask饥饿的情况。
+        // 非阻塞读取最新目标。
+        // ControlTask独立检查时效，包括BleTask饥饿的情况。
         (void)xQueueReceive(context.command_queue,&latest_command,0);
         const bool driving=control::IsCommandFresh(latest_command,cycle_time_us,command_ready_us);
         if (was_driving && !driving && latest_command.valid) {
@@ -167,6 +185,7 @@ void ControlTask(void *argument)
             diagnostics::Record(timeout); // 只复制；串口格式化在BleTask低频观察。
         }
         was_driving=driving;
+        // command在本轮无效时退化为零目标。
         const auto command=driving ? latest_command : control::MotionCommand{};
         const bool balancing=true;
         const bool starting = balancing && !was_balancing;
@@ -179,6 +198,8 @@ void ControlTask(void *argument)
         }
         was_balancing = balancing;
         control::ObserveCurrentSaturation(controller, current_saturated);
+        // attitude_due标记本轮到姿态截止点。
+        // attitude_dt_s是实际姿态间隔，单位s。
         const bool attitude_due = !attitude.valid || starting ||
             cycle_time_us >= next_attitude_us;
         float attitude_dt_s=0.0f;
@@ -203,7 +224,10 @@ void ControlTask(void *argument)
             if (balancing && std::abs(pitch_rad - control::PitchOffset_rad) > control::FallAngle_rad) { VEHICLE_ERROR(&error, ESP_ERR_INVALID_STATE, fall, application, 0, pitch_rad-control::PitchOffset_rad, control::FallAngle_rad, -1, 3, 1); StopControl(error); }
             if (!(attitude_dt_s > 0.0f && attitude_dt_s <= control::MaximumControlGap_s)) { VEHICLE_ERROR(&error, ESP_ERR_TIMEOUT, attitude_gap, application, 0, attitude_dt_s, control::MaximumControlGap_s, -1, 3, 1); StopControl(error); }
         }
-        // 编码器仍每个电流周期采集；本轮外环同时使用最新IMU和最新轮速。
+        // 编码器仍每个电流周期采集。
+        // 本轮外环同时使用最新IMU和最新轮速。
+        // wheels保存本周期轮速。
+        // encoder_start用于统计编码器耗时。
         motor::WheelState wheels{};
         cycle_timing.stage=control::ControlStage::encoder;
         const auto encoder_start=esp_timer_get_time();
@@ -222,6 +246,7 @@ void ControlTask(void *argument)
             cycle_timing.outer_us=esp_timer_get_time()-outer_start;
             if (!output.valid) { VEHICLE_ERROR(&error, ESP_ERR_INVALID_RESPONSE, control_output, application, 0); StopControl(error); }
         }
+        // current保存本周期电流反馈。
         motor::CurrentFeedback current{};
         if (balancing) {
             cycle_timing.stage=control::ControlStage::current;
@@ -237,6 +262,7 @@ void ControlTask(void *argument)
         diagnostics::CommitControlSnapshot({cycle_time_us,sequence,attitude.pitch_deg,
             wheels.velocity_M0_rad_s,wheels.velocity_M1_rad_s,output.target_M0_A,output.target_M1_A,
             current.sample_M0.iq_measured_A,current.sample_M1.iq_measured_A,cycle_dt_s,true});
+        // snapshot发布到遥测队列，供BLE .007和可选Wi-Fi消费。
         const wifi_telemetry::TelemetrySnapshot snapshot{
             cycle_time_us, sequence, attitude.pitch_deg,
             wheels.velocity_M0_rad_s, wheels.velocity_M1_rad_s,
@@ -254,6 +280,7 @@ void ControlTask(void *argument)
     }
 }
 #if CONFIG_VEHICLE_WIFI_ENABLED
+// WifiTelemetryTask按ServicePeriod_ms消费最新遥测快照。
 void WifiTelemetryTask(void *argument)
 {
     // Wi-Fi服务运行在低频服务任务中，与控制任务共享最新值队列。

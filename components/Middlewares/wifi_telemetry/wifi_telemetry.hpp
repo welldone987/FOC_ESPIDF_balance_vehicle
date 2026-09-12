@@ -11,6 +11,7 @@ namespace wifi_telemetry {
  * Wi-Fi遥测模块把控制任务发布的最新快照编码为LF分隔的TCP文本帧。
  * Service()使用非阻塞socket，只维护一个客户端和一份待发送缓冲区。
  */
+// TelemetrySnapshot保存控制任务发布的一帧定长遥测数据。
 struct TelemetrySnapshot {
     // device_time_us保存控制周期采样时刻，单位us。
     std::int64_t device_time_us;
@@ -26,20 +27,26 @@ struct TelemetrySnapshot {
     float target_M0_A;
     // target_M1_A保存M1电机目标电流，单位A。
     float target_M1_A;
+    // iq_measured_M0_A和uq_applied_M0_V保存M0的Iq反馈与Uq输出，单位A、V。
     float iq_measured_M0_A;
     float iq_measured_M1_A;
     float uq_applied_M0_V;
     float uq_applied_M1_V;
+    // phase_a_M0_A、phase_b_M0_A、phase_c_M0_A等六项保存两轮三相采样电流，单位A。
     float phase_a_M0_A;
     float phase_b_M0_A;
     float phase_c_M0_A;
     float phase_a_M1_A;
     float phase_b_M1_A;
     float phase_c_M1_A;
+    // current_dt_s是电流环实际周期，单位s。
     float current_dt_s;
+    // current_sample_age_us是电流采样到发布的年龄，单位us。
     std::int64_t current_sample_age_us;
+    // current_saturated标记本周期电流环是否饱和。
     bool current_saturated;
-    bool current_valid; // 停机时false，零值不代表有效测量。
+    // current_valid停机时为false，零值不代表有效测量。
+    bool current_valid;
 };
 
 // Initialize()初始化Wi-Fi station、事件回调和TCP遥测所需网络资源。

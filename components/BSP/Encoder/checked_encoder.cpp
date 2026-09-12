@@ -43,11 +43,13 @@ bool CheckedEncoder::Refresh()
     if (!healthy_) {
         return false;
     }
+    // raw按大端保存AS5600的12位原始角度寄存器内容。
     std::uint8_t raw[2]{};
     raw_error_ = i2c_bus_read_bytes(
         device_, As5600RawAngleRegister, sizeof(raw), raw);
     healthy_ = healthy_ && raw_error_ == ESP_OK;
     if (healthy_) {
+        // count屏蔽到低12位，一个圆周对应4096个计数。
         const unsigned count = ((raw[0] << 8) | raw[1]) & 0x0fff;
         angle_rad_ = (count * 360.0f / 4096.0f) * (3.14159265358979f / 180.0f);
     }
@@ -59,6 +61,7 @@ float CheckedEncoder::getSensorAngle()
     if (!cached_) {
         Refresh();
     }
+    // 返回-1让SimpleFOC识别本次读取失败。
     return healthy_ ? angle_rad_ : -1.0f;
 }
 

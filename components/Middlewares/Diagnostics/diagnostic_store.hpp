@@ -9,37 +9,53 @@
 namespace vehicle {
 namespace diagnostics {
 
+// BootStep按启动顺序标记当前初始化阶段。
 enum class BootStep : std::uint16_t {
     safe_output=1, storage, power, voltage, nvs, core_dump, ble,
     wifi, imu, motor, outputs_off, timer, complete
 };
 
+// ControlSnapshot保存控制任务最近一次发布的定长现场。
 struct ControlSnapshot {
+    // sampled_us和sequence标识快照的采样时刻和序号。
     std::int64_t sampled_us{};
     std::uint32_t sequence{};
+    // pitch_deg、两轮速度与目标保存本周期观测值。
     float pitch_deg{}, velocity_M0{}, velocity_M1{}, target_M0{}, target_M1{};
+    // iq_M0、iq_M1和dt_s保存实测电流与周期，单位A、s。
     float iq_M0{}, iq_M1{}, dt_s{};
+    // valid标记快照是否来自完成的控制周期。
     bool valid{};
 };
 
+// Event保存一条ErrorInfo及其致命标志。
 struct Event { std::uint32_t event_seq{}; ErrorInfo error{}; std::uint8_t flags{}; };
 
+// CrashState是panic Core dump保留的固定RAM诊断布局。
 struct CrashState {
     // schema标识RAM诊断布局版本，离线解码必须使用匹配ELF。
     std::uint32_t schema{4};
+    // boot_step和event_seq记录启动阶段与事件序号。
     BootStep boot_step{};
     std::uint32_t event_seq{};
+    // first_fault保留独立首故障槽。
     Event first_fault{};
+    // events以环形保存最近的EventCapacity条事件。
     Event events[EventCapacity]{};
+    // count和next记录环内事件数与下一个写入槽。
     std::uint8_t count{}, next{};
+    // boot_complete标记启动流程已完成。
     bool boot_complete{};
+    // last_control和fault_control保存最近与故障前控制快照。
     ControlSnapshot last_control{}, fault_control{};
+    // last_timing、fault_timing及首轮/首次平衡计时用于时序诊断。
     control::ControlTiming last_timing{}, fault_timing{}, first_loop{}, first_balance{};
 };
 
 inline void Commit(CrashState &state, const ErrorInfo &error, bool fatal)
 {
     Event event{++state.event_seq, error, static_cast<std::uint8_t>(fatal ? 1 : 0)};
+    // 致命错误且无首故障时，同时保存首故障和现场快照。
     if (fatal && state.first_fault.event_seq == 0) {
         event.flags |= 2;
         state.first_fault = event;

@@ -15,13 +15,17 @@ namespace {
  * Initialize()只建立一次ADC资源，ReadBusVoltage()在启动检查时提供当前读数。
  */
 
+// Attenuation是VIN_MEA采样通道使用的ADC衰减档。
 constexpr adc_atten_t Attenuation = ADC_ATTEN_DB_12;
 
-// adc_handle和calibration_handle保存一次性ADC与线性校准资源。
+// adc_handle保存ADC2一次性采样单元句柄。
 adc_oneshot_unit_handle_t adc_handle = nullptr;
+// calibration_handle保存line-fitting线性校准句柄。
 adc_cali_handle_t calibration_handle = nullptr;
+// adc_unit和adc_channel由bus_voltage_adc在Initialize()中解析得到。
 adc_unit_t adc_unit = ADC_UNIT_2;
 adc_channel_t adc_channel = ADC_CHANNEL_4;
+// initialized为true后ReadBusVoltage()才允许访问ADC。
 bool initialized = false;
 
 } // namespace

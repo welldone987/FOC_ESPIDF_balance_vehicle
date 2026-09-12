@@ -32,47 +32,74 @@
 namespace vehicle {
 namespace ble {
 namespace {
-
-// .002兼容成功版本的X,Y命令；.007为独立的20字节遥测协议。
+/*
+ * NimBLE主机维护主服务和.002/.007/.008三个特征。
+ * GAP回调管理连接生命周期并复制原始报文到长度1队列。
+ * BleTask在Run()中解析命令、写命令队列并低频输出诊断事件。
+ */
+// .002兼容成功版本的X,Y命令。
+// .007为独立的20字节遥测协议。
 #define BALANCE_UUID_BYTES(id) \
     0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, \
     0x93, 0xf3, 0xa3, 0xb5, id, 0x00, 0x40, 0x6e
+// service_uuid是主服务UUID，其余三个UUID对应命令、遥测和诊断特征。
 ble_uuid128_t service_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x01));
 ble_uuid128_t command_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x02));
 ble_uuid128_t telemetry_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x07));
 ble_uuid128_t diagnostic_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x08));
+// characteristics和services保存GATT注册表。
 ble_gatt_chr_def characteristics[4]{};
 ble_gatt_svc_def services[2]{};
+// Incoming保存GATT回调复制的一条原始报文。
 struct Incoming {
+    // text和length保存载荷内容与长度。
     char text[20]{};
     std::uint16_t length{};
+    // epoch标识连接代次，连接重建后旧命令失效。
     std::uint32_t epoch{};
+    // received_us保存GATT写入时刻，单位us。
     std::int64_t received_us{};
+    // connected标记报文来自已建立的连接。
     bool connected{};
 };
 StaticQueue_t incoming_storage{};
 std::uint8_t incoming_buffer[sizeof(Incoming)]{};
+// incoming_queue是GATT回调与BleTask之间的长度1静态队列。
 QueueHandle_t incoming_queue{};
 // 连接句柄和epoch仅在NimBLE主机任务使用，跨任务只传值。
 std::uint32_t connection_epoch{};
+// ready和ready_error是NimBLE同步回调向Initialize()交接的静态结果。
 std::atomic<int> ready{0};
 ErrorInfo ready_error{};
+// initialized避免重复初始化NimBLE。
 bool initialized=false;
+// own_address_type保存广播使用的本机地址类型。
 std::uint8_t own_address_type=BLE_OWN_ADDR_PUBLIC;
+// connection_handle和telemetry_handle保存当前连接与.007特征值句柄。
 std::uint16_t connection_handle=BLE_HS_CONN_HANDLE_NONE;
 std::uint16_t telemetry_handle{};
+// subscribed标记客户端是否已订阅.007通知。
 bool subscribed=false;
+// telemetry_queue保存控制任务发布的最近遥测快照。
 QueueHandle_t telemetry_queue{};
+// telemetry_timer以NotifyPeriod_ms周期触发SendTelemetry()。
 ble_npl_callout telemetry_timer{};
-// .008 READ固定事件文本，WRITE小端seq确认；同一事件的长读不会推进游标。
+// .008 READ固定事件文本，WRITE以小端seq确认。
+// 同一事件的长读不会推进游标。
+// offered_event保存当前等待客户端确认的诊断事件。
 diagnostics::Event offered_event{};
+// diagnostic_cursor和serial_cursor分别记录BLE确认与串口输出的进度。
 std::uint32_t diagnostic_cursor{}, serial_cursor{};
+// replay_first_fault为true时下次读取先返回首故障。
 bool replay_first_fault=true;
+// diagnostic_text保存待读取事件的UTF-8文本。
 char diagnostic_text[diagnostics::DiagnosticTextCapacity]{"none"};
+// last_notify_error_us和notify_failures用于notify失败日志节流。
 std::int64_t last_notify_error_us{};
 unsigned notify_failures{};
 void RememberBle(int rc, ErrorPoint point);
 
+// PrepareDiagnostic()从事件环取出下一条待读事件并格式化为文本。
 void PrepareDiagnostic()
 {
     if (offered_event.event_seq) { return; }
@@ -82,6 +109,7 @@ void PrepareDiagnostic()
     } else { std::strcpy(diagnostic_text,"none"); }
 }
 
+// DiagnosticAccess()处理.008的READ文本与WRITE序号确认。
 int DiagnosticAccess(std::uint16_t conn, std::uint16_t, ble_gatt_access_ctxt *context, void *)
 {
     if (!context || !context->om || conn!=connection_handle) { return BLE_ATT_ERR_UNLIKELY; }
@@ -96,7 +124,8 @@ int DiagnosticAccess(std::uint16_t conn, std::uint16_t, ble_gatt_access_ctxt *co
     }
     const std::uint32_t seq=bytes[0] | (std::uint32_t{bytes[1]}<<8) | (std::uint32_t{bytes[2]}<<16) | (std::uint32_t{bytes[3]}<<24);
     if (!seq || seq!=offered_event.event_seq) { return BLE_ATT_ERR_VALUE_NOT_ALLOWED; }
-    // 首故障先重放，之后从环中最早保留事件开始；独立首故障不能跳过较早非致命事件。
+    // 首故障先重放，之后从环中最早保留事件开始。
+    // 独立首故障不能跳过较早非致命事件。
     if (replay_first_fault) { replay_first_fault=false; }
     else { diagnostic_cursor=seq; }
     offered_event={};
@@ -104,6 +133,7 @@ int DiagnosticAccess(std::uint16_t conn, std::uint16_t, ble_gatt_access_ctxt *co
     return 0;
 }
 
+// LatestTelemetry()从共享队列peek最新快照并编码为报文。
 TelemetryPacket LatestTelemetry()
 {
     wifi_telemetry::TelemetrySnapshot sample{};
@@ -111,7 +141,8 @@ TelemetryPacket LatestTelemetry()
     return EncodeTelemetry(have ? &sample : nullptr,esp_timer_get_time());
 }
 
-// 定时事件与GAP回调均在NimBLE主机执行，句柄/订阅状态不跨任务共享。
+// 定时事件与GAP回调均在NimBLE主机执行。
+// 连接句柄和订阅状态不跨任务共享。
 void SendTelemetry(ble_npl_event *)
 {
     PrepareDiagnostic();
@@ -134,6 +165,7 @@ void SendTelemetry(ble_npl_event *)
     (void)ble_npl_callout_reset(&telemetry_timer,ble_npl_time_ms_to_ticks32(NotifyPeriod_ms));
 }
 
+// TelemetryAccess()处理.007的READ请求。
 int TelemetryAccess(std::uint16_t, std::uint16_t, ble_gatt_access_ctxt *context, void *)
 {
     if (!context || !context->om || context->op!=BLE_GATT_ACCESS_OP_READ_CHR) {
@@ -142,6 +174,7 @@ int TelemetryAccess(std::uint16_t, std::uint16_t, ble_gatt_access_ctxt *context,
     const auto packet=LatestTelemetry();
     return os_mbuf_append(context->om,packet.data(),packet.size())==0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
 }
+// PublishConnection()向BleTask队列写入连接状态变化。
 void PublishConnection(bool connected)
 {
     Incoming input{};
@@ -150,6 +183,7 @@ void PublishConnection(bool connected)
     input.received_us=esp_timer_get_time();
     xQueueOverwrite(incoming_queue,&input);
 }
+// RememberBle()把NimBLE返回码记录为ErrorInfo事件。
 void RememberBle(int rc, ErrorPoint point)
 {
     if (!rc) { return; }
@@ -272,7 +306,8 @@ int StartAdvertising(ErrorInfo *error)
     return rc;
 }
 
-// OnReset()满足NimBLE复位回调接口；复位信息由上层诊断路径处理。
+// OnReset()满足NimBLE复位回调接口。
+// 复位信息由上层诊断路径处理。
 void OnReset(int reason)
 {
     RememberBle(reason,ErrorPoint::ble_reset);
@@ -307,7 +342,7 @@ void HostTask(void *)
     nimble_port_freertos_deinit();
 }
 
-// 一个WRITE复制一个固定长度报文；内容由BleTask严格解析。
+// CharacteristicAccess()处理.002的READ说明与WRITE报文复制。
 int CharacteristicAccess(std::uint16_t conn_handle,
                          std::uint16_t,
                          ble_gatt_access_ctxt *context,
@@ -406,7 +441,9 @@ esp_err_t Initialize(QueueHandle_t snapshots, ErrorInfo *error)
 
 void Run(QueueHandle_t command_queue)
 {
+    // epoch跟踪连接代次，变化时清空运动目标。
     std::uint32_t epoch{};
+    // next_serial_us限制低频串口事件输出的时刻，单位us。
     std::int64_t next_serial_us{};
     for (;;) {
         // 低优先级BleTask打印，避免串口吞吐占用NimBLE主机回调或ControlTask。
@@ -429,6 +466,7 @@ void Run(QueueHandle_t command_queue)
             xQueueOverwrite(command_queue,&zero);
         }
         if (!input.connected || input.length == 0) { continue; }
+        // parsed保存解析后的X,Y百分比。
         RemoteCommand parsed{};
         if (!ParseCommand(std::string_view(input.text,input.length),parsed)) {
             ErrorInfo error{};
@@ -443,7 +481,8 @@ void Run(QueueHandle_t command_queue)
             parsed.throttle * control::DriveSpeedLimit_rad_s / 100.0f,
             parsed.steering * control::YawRateLimit_rad_s / 100.0f,
             input.received_us,true};
-        // 长度1最新值语义；过期判断使用接收时刻，不能因排队延长寿命。
+        // 长度1队列只保留最新值。
+        // 过期判断使用接收时刻，不能因排队延长寿命。
         xQueueOverwrite(command_queue,&command);
     }
 }

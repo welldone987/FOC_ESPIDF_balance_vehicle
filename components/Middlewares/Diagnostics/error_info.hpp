@@ -29,7 +29,8 @@ enum class ErrorPoint : std::uint16_t {
     control_gap=0x500, attitude_gap, fall, control_output, control_timer,
     ble_init=0x600, ble_name, ble_count, ble_services, ble_address=0x605,
     ble_adv_fields, ble_scan_fields, ble_advertise, ble_ready_timeout, ble_reset, ble_notify,
-    // 追加编号，不改变已有错误点；0x620段用于上位机本地错误，raw保留DOMException.code。
+    // 追加编号，不改变已有错误点。
+    // 0x620段用于上位机本地错误，raw保留DOMException.code。
     ble_connect=0x60c, ble_disconnect, ble_command, ble_command_timeout, ble_conn_update,
     ble_web_write_timeout=0x620, ble_web_gatt, ble_web_telemetry,
     wifi_init=0x700
@@ -37,14 +38,19 @@ enum class ErrorPoint : std::uint16_t {
 
 // ErrorInfo保存错误来源、现场数值和源码位置，供启动与运行诊断复制。
 struct ErrorInfo {
+    // code保存原始esp_err_t，point_id标识发生位置。
     esp_err_t code{};
     ErrorPoint point_id{};
+    // domain和raw_code区分错误来源域与原始错误码。
     ErrorDomain domain{};
     std::int32_t raw_code{};
+    // file、function和line保存报错源码位置。
     const char *file{};
     const char *function{};
     std::uint32_t line{};
+    // value和threshold保存现场值与阈值，单位由调用点决定。
     float value{}, threshold{};
+    // channel保存通道编号，-1表示不适用。
     std::int16_t channel{-1};
     // valid_fields的bit0、bit1和bit2依次表示value、threshold和channel有效。
     std::uint8_t valid_fields{};

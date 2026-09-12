@@ -6,12 +6,19 @@
 
 namespace vehicle {
 namespace ble {
-
+/*
+ * ReadInteger()和ConsumeComma()按字节解析X,Y载荷并拒绝溢出。
+ * ParseCommand()兼容X,Y、X,Y\n和X,Y\r\n三种形式。
+ */
+// RemoteCommand保存网页控制端的转向与油门百分比（±100）。
 struct RemoteCommand {
+    // steering是转向百分比，X正为右转。
     std::int16_t steering{};
+    // throttle是油门百分比，Y正为前进。
     std::int16_t throttle{};
 };
 
+// ReadInteger()读取可带符号的十进制整数并拒绝溢出。
 constexpr bool ReadInteger(std::string_view text, std::size_t &offset,
                            int limit, int &value)
 {
@@ -36,11 +43,13 @@ constexpr bool ReadInteger(std::string_view text, std::size_t &offset,
     return offset != begin;
 }
 
+// ConsumeComma()消费字段之间的逗号。
 constexpr bool ConsumeComma(std::string_view text, std::size_t &offset)
 {
     return offset < text.size() && text[offset++] == ',';
 }
 
+// ParseCommand()解析完整X,Y载荷，尾随内容一律拒绝。
 constexpr bool ParseCommand(std::string_view text, RemoteCommand &out)
 {
     RemoteCommand parsed{};
@@ -48,7 +57,8 @@ constexpr bool ParseCommand(std::string_view text, RemoteCommand &out)
     int steering = 0;
     int throttle = 0;
     if (text.size() < 3 || text.size() > 20) { return false; }
-    // 兼容成功版本的X,Y、X,Y\n和X,Y\r\n；其它尾随内容一律拒绝。
+    // 兼容成功版本的X,Y、X,Y\n和X,Y\r\n。
+    // 其它尾随内容一律拒绝。
     if (text.back() == '\n') {
         text.remove_suffix(1);
         if (!text.empty() && text.back() == '\r') { text.remove_suffix(1); }

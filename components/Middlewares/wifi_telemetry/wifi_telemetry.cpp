@@ -35,8 +35,11 @@ namespace {
 
 // WifiReady表示STA已经通过IP_EVENT_STA_GOT_IP获得可用地址。
 constexpr EventBits_t WifiReady = BIT0;
+// ConnectRequested表示需要一次连接或重连尝试。
 constexpr EventBits_t ConnectRequested = BIT1;
+// Tag是Wi-Fi日志标签。
 constexpr char Tag[] = "wifi_telemetry";
+// Header是TCP v2协议头和21列字段名。
 constexpr char Header[] =
     "#balancing_vehicle_tcp,v2\n"
     "#time_s,pitch_deg,left_velocity_rad_s,right_velocity_rad_s,"
@@ -48,18 +51,23 @@ constexpr char Header[] =
 StaticEventGroup_t wifi_events_storage{};
 // wifi_events由事件回调设置，由服务任务读取。
 EventGroupHandle_t wifi_events = nullptr;
+// wifi_handler和ip_handler保存事件注册句柄。
 esp_event_handler_instance_t wifi_handler = nullptr;
 esp_event_handler_instance_t ip_handler = nullptr;
+// listener_socket和client_socket保存非阻塞监听与客户端socket。
 int listener_socket = -1;
 int client_socket = -1;
 // pending保存TCP尚未发送完的协议头或遥测行。
 std::array<char, BufferSize> pending{};
 std::size_t pending_length = 0U;
 std::size_t pending_offset = 0U;
+// blocked_since_ms和last_connect_ms分别记录发送阻塞和上次连接请求的时刻，单位ms。
 std::uint32_t blocked_since_ms = 0U;
 std::uint32_t last_connect_ms = 0U;
-// 仅由Service访问；连接请求成功后等待事件，不重复打断关联或DHCP。
+// 仅由Service访问。
+// 连接请求成功后等待事件，不重复打断关联或DHCP。
 bool reconnect_pending = false;
+// last_sequence记录最近编码过的快照序号。
 std::uint32_t last_sequence = 0U;
 
 // NowMilliseconds()把ESP高精度计时器转换为回绕可接受的毫秒时基。
@@ -196,7 +204,8 @@ void Service(const TelemetrySnapshot *snapshot)
     const bool wifi_ready =
         (xEventGroupGetBits(wifi_events) & WifiReady) != 0U;
     if (!wifi_ready) {
-        // 启动或断线事件触发一次延时重试；连接中和等待DHCP期间不重复请求。
+        // 启动或断线事件触发一次延时重试。
+        // 连接中和等待DHCP期间不重复请求。
         CloseSockets();
         const EventBits_t events = xEventGroupClearBits(wifi_events, ConnectRequested);
         if ((events & ConnectRequested) != 0U) {

@@ -13,8 +13,10 @@ namespace vehicle {
 namespace diagnostics {
 namespace {
 
+// lock保护g_diag_crash的所有多字段更新。
 portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 
+// StageName()把ControlStage映射为固定诊断文本。
 const char *StageName(control::ControlStage stage)
 {
     constexpr const char *names[]={"WAIT","COMMAND","OUTPUTS_OFF","ENCODER","IMU","OUTER","CURRENT","PUBLISH","COMPLETE"};
@@ -22,6 +24,7 @@ const char *StageName(control::ControlStage stage)
     return index < sizeof(names)/sizeof(names[0]) ? names[index] : "UNKNOWN";
 }
 
+// CurrentStageName()把CurrentStage映射为固定诊断文本。
 const char *CurrentStageName(motor::CurrentStage stage)
 {
     constexpr const char *names[]={"NOT_RUN","ADC","MATH","BEFORE_PWM","PWM","AFTER_PWM","ENABLE","COMPLETE"};
@@ -70,6 +73,7 @@ int FormatEvent(const Event &event, char *buffer, std::size_t capacity)
 {
     const auto &e=event.error;
     const char *file=e.file ? e.file : "?";
+    // 只保留文件名部分，去掉构建路径。
     const char *base=std::strrchr(file,'/');
     if (base) { file=base+1; }
     base=std::strrchr(file,'\\');
