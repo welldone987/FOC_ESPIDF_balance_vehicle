@@ -13,12 +13,14 @@ inline constexpr float kFallAngleRad = 50.0f * kDegToRad;
 inline constexpr float kGravityMps2 = 9.81f;
 inline constexpr float kWheelRadiusM = 0.04f;
 inline constexpr float kWheelTrackM = 0.18f;
-inline constexpr float kDriveSpeedLimitRadS = 2.0f;
-inline constexpr float kWheelAccelerationRadS2 = 5.0f;
-inline constexpr float kYawRateLimitRadS = 0.5f;
-inline constexpr float kYawAccelerationRadS2 = 0.5f;
+// 旧版满杆25rad/s的80%；斜坡到满杆1s，避免旧限速形成长期瓶颈。
+inline constexpr float kDriveSpeedLimitRadS = 20.0f;
+inline constexpr float kWheelAccelerationRadS2 = 20.0f;
+// 旧版转向为电压，无法按比例换算偏航；此处为放开响应的待实测目标。
+inline constexpr float kYawRateLimitRadS = 2.0f;
+inline constexpr float kYawAccelerationRadS2 = 4.0f;
 inline constexpr float kPitchOffsetRad = 1.8f * kDegToRad;
-inline constexpr float kPitchLimitRad = 3.0f * kDegToRad;
+inline constexpr float kPitchLimitRad = 4.8f * kDegToRad;
 // kAttitudeKpAPerRad和kAttitudeKdAPerRadS属于Control姿态PD，输出平衡电流请求。
 inline constexpr float kAttitudeKpAPerRad = 0.056f * kRadToDeg;
 inline constexpr float kAttitudeKdAPerRadS = 0.01f * kRadToDeg;

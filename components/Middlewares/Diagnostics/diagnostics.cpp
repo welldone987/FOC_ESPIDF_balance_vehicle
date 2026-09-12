@@ -1,4 +1,6 @@
 #include "diagnostics.hpp"
+#include <cstdio>
+#include <cstring>
 
 #include "esp_attr.h"
 #include "esp_log.h"
@@ -53,6 +55,32 @@ void boot(BootStep step, const char *state, esp_err_t rc)
 
 void record(const ErrorInfo &error, bool fatal)
 { portENTER_CRITICAL(&lock); commit(g_diag_crash,error,fatal); portEXIT_CRITICAL(&lock); }
+
+bool readEvent(std::uint32_t after, Event &event, bool first_fault)
+{
+    portENTER_CRITICAL(&lock);
+    const bool have_fault=first_fault && g_diag_crash.first_fault.event_seq!=0;
+    const bool found=have_fault || nextEvent(g_diag_crash,after,event);
+    if (have_fault) { event=g_diag_crash.first_fault; }
+    portEXIT_CRITICAL(&lock);
+    return found;
+}
+
+int formatEvent(const Event &event, char *buffer, std::size_t capacity)
+{
+    const auto &e=event.error;
+    const char *file=e.file ? e.file : "?";
+    const char *base=std::strrchr(file,'/');
+    if (base) { file=base+1; }
+    base=std::strrchr(file,'\\');
+    if (base) { file=base+1; }
+    return std::snprintf(buffer,capacity,
+        "seq=%lu flags=%u point=0x%04x code=%ld name=%s domain=%u raw=%ld file=%s line=%lu function=%s valid=%u value=%g threshold=%g channel=%d comparison=%d",
+        static_cast<unsigned long>(event.event_seq),event.flags,static_cast<unsigned>(e.point_id),
+        static_cast<long>(e.code),esp_err_to_name(e.code),static_cast<unsigned>(e.domain),static_cast<long>(e.raw_code),
+        file,static_cast<unsigned long>(e.line),e.function ? e.function : "?",e.valid_fields,
+        static_cast<double>(e.value),static_cast<double>(e.threshold),e.channel,e.comparison);
+}
 
 void controlSnapshot(const ControlSnapshot &snapshot)
 { portENTER_CRITICAL(&lock); g_diag_crash.last_control=snapshot; portEXIT_CRITICAL(&lock); }

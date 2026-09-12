@@ -18,6 +18,7 @@
 <div class="readout"><div><label>速度目标</label><output id="speed">0 <span>%</span></output></div><div><label>转向目标 · 左 / 右</label><output id="direction">0 <span>%</span></output></div></div>
 <div class="readout" aria-label="车辆实测"><div><label>俯仰角 °</label><output id="pitch">—</output></div><div><label>左轮 rad/s</label><output id="left">—</output></div><div><label>右轮 rad/s</label><output id="right">—</output></div></div>
 <p id="telemetryState" role="status">等待车辆数据</p>
+<details open><summary>诊断记录（断开后保留）</summary><pre id="diagnosticLog" style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto;font-size:11px" aria-live="polite"></pre></details>
 <footer><p>松手归零，保持零速平衡。失焦或切到后台会归零。</p><p>摇杆百分比为发送目标，下方为车辆实测值。数据失效时目标归零；归零不等于关闭电机。</p></footer>
 </main>
 <script>
@@ -25,6 +26,42 @@
 const SERVICE='6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 const COMMAND='6e400002-b5a3-f393-e0a9-e50e24dcca9e';
 const TELEMETRY='6e400007-b5a3-f393-e0a9-e50e24dcca9e';
+const DIAGNOSTIC='6e400008-b5a3-f393-e0a9-e50e24dcca9e';
+const diagnosticLog=document.getElementById('diagnosticLog'),diagnosticLines=[];
+function logDiagnostic(source,text){
+ const line=`${new Date().toISOString()} [${source}] ${text}`;
+ diagnosticLines.push(line);if(diagnosticLines.length>100)diagnosticLines.shift();
+ diagnosticLog.textContent=diagnosticLines.join('\n');console.info(line);
+}
+function webError(point,error,detail=''){
+ logDiagnostic('WEB',`point=0x${point.toString(16)} code=${point===0x620?263:-1} domain=0 raw=${Number.isInteger(error?.code)?error.code:0} name=${error?.name||'Error'} message=${error?.message||error} ${detail}`);
+}
+async function gattOperation(s,operation,name){
+ let soft,hard;const start=performance.now();
+ try{
+  return await Promise.race([operation(),new Promise((_,reject)=>{
+   soft=setTimeout(()=>{if(session===s){center();s.zero=true;logDiagnostic('WEB',`operation=${name} pending_ms=200 目标归零，等待当前GATT操作完成`);}},200);
+   hard=setTimeout(()=>{const e=new Error(`${name}超时（1000ms）`);e.point=0x620;reject(e);},1000);
+  })]);
+ }finally{clearTimeout(soft);clearTimeout(hard);s.lastGattMs=performance.now()-start;s.lastOperation=name;}
+}
+async function pollDiagnostic(s){
+ const value=await gattOperation(s,()=>s.diagnostic.readValue(),'诊断读取');
+ if(session!==s)return;
+ const text=new TextDecoder().decode(value);
+ if(text==='none')return;
+ const match=/^seq=(\d+) /.exec(text);
+ if(!match){webError(0x621,new Error('诊断格式无效'),text);return;}
+ const seq=Number(match[1]);
+ if(!s.seenDiagnostics.has(seq)){
+  if(s.diagSequence && seq>s.diagSequence+1)logDiagnostic('DEVICE',`事件序号缺口 ${s.diagSequence+1}..${seq-1}，可能已被16条环覆盖`);
+  logDiagnostic('DEVICE',text);s.seenDiagnostics.add(seq);s.diagSequence=seq;
+  if(s.seenDiagnostics.size>128)s.seenDiagnostics.delete(s.seenDiagnostics.values().next().value);
+ }
+ if(s.zero)return; // 松手/延迟归零优先于确认，下一轮可重复读取同一事件。
+ const ack=new Uint8Array(4);new DataView(ack.buffer).setUint32(0,seq,true);
+ await gattOperation(s,()=>s.diagnostic.writeValueWithResponse(ack),'诊断确认');
+}
 const button=document.getElementById('connect'),status=document.getElementById('status');
 const pad=document.getElementById('pad'),knob=document.getElementById('knob');
 const speed=document.getElementById('speed'),direction=document.getElementById('direction');
@@ -37,6 +74,7 @@ function render(){
  knob.style.transform=`translate(${x*r/100}px,${-y*r/100}px)`;
 }
 function invalidateTelemetry(s,message){
+ if(s.telemetryValid)webError(0x622,new Error(message),`sample_seq=${s.sampleSequence} age_ms=${performance.now()-s.lastSampleAt}`);
  s.telemetryValid=false;pitch.textContent=left.textContent=right.textContent='—';telemetryState.textContent=message;
  center();s.zero=true;
 }
@@ -58,6 +96,7 @@ function serviceSession(s){
 }
 function center(){pointer=null;keys.clear();x=y=0;render();}
 function close(message='蓝牙已断开。'){
+ if(session)logDiagnostic('WEB',`LOCAL_CLOSE message=${message} operation=${session.lastOperation||'none'} duration_ms=${session.lastGattMs||0}`);
  ++generation;const old=session;session=null;center();
  pitch.textContent=left.textContent=right.textContent='—';telemetryState.textContent='等待车辆数据';
  if(old){clearInterval(old.timer);old.device.gatt.disconnect();}
@@ -71,12 +110,12 @@ async function flush(s){
    const zero=s.zero||!s.telemetryValid||document.hidden;s.zero=false;
    const data=new TextEncoder().encode(`${zero?0:x},${zero?0:y}\n`);
 
-   let deadline;
-   try{
-    await Promise.race([s.characteristic.writeValueWithResponse(data),new Promise((_,reject)=>{deadline=setTimeout(()=>reject(new Error('写入超时')),200);})]);
-   }finally{clearTimeout(deadline);}
+   await gattOperation(s,()=>s.characteristic.writeValueWithResponse(data),'命令写入');
+   if(s===session&&!s.zero&&performance.now()>=s.nextDiagnosticAt){
+    s.nextDiagnosticAt=performance.now()+250;await pollDiagnostic(s);
+   }
   }while(s===session&&s.zero);
- }catch(error){if(s===session)close(`连接中断：${error.message}`);}
+ }catch(error){if(s===session){webError(error.point||0x621,error,`operation=${s.lastOperation} duration_ms=${s.lastGattMs}`);close(`连接中断：${error.message}`);}}
  finally{s.busy=false;}
 }
 function zero(){center();if(session){session.zero=true;void flush(session);}}
@@ -95,15 +134,16 @@ async function connect(){
   if(token!==generation||document.hidden){device.gatt.disconnect();return;}
   if(!characteristic.properties.write)throw new Error('命令特征不支持带响应写入');
   const telemetry=await service.getCharacteristic(TELEMETRY);
+  const diagnostic=await service.getCharacteristic(DIAGNOSTIC);
   if(token!==generation||document.hidden){device.gatt.disconnect();return;}
-  const s={device,characteristic,busy:false,zero:true,timer:null,telemetryValid:false,lastSampleAt:0,sampleSequence:null,sampleTime:null};session=s;
+  const s={device,characteristic,diagnostic,busy:false,zero:true,timer:null,telemetryValid:false,lastSampleAt:0,sampleSequence:null,sampleTime:null,nextDiagnosticAt:0,seenDiagnostics:new Set(),diagSequence:0};session=s;
   telemetry.addEventListener('characteristicvaluechanged',event=>receiveTelemetry(s,event));
-  device.addEventListener('gattserverdisconnected',()=>{if(session===s)close();});
+  device.addEventListener('gattserverdisconnected',()=>{if(session===s){webError(0x621,new Error('GATT链路断开；浏览器不提供HCI原因码，请重连读取设备事件或查看串口'));close('蓝牙链路已断开，详见诊断记录。');}});
   await telemetry.startNotifications();
   if(s!==session||token!==generation||document.hidden){if(s===session)close();return;}
   center();pad.setAttribute('aria-disabled','false');button.textContent='断开连接';status.textContent='已连接 · 实测数据有效后可操控，松手归零';
   s.timer=setInterval(()=>serviceSession(s),50);await flush(s);
- }catch(error){if(device?.gatt.connected)device.gatt.disconnect();if(token===generation)close(`连接失败：${error.message}`);}
+ }catch(error){webError(0x621,error,'operation=connect/discovery/subscribe');if(device?.gatt.connected)device.gatt.disconnect();if(token===generation)close(`连接失败：${error.message}`);}
  finally{connecting=false;button.disabled=false;}
 }
 function move(event){

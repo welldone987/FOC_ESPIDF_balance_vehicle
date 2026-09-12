@@ -25,6 +25,9 @@ enum class ErrorPoint : std::uint16_t {
     control_gap=0x500, attitude_gap, fall, control_output, control_timer,
     ble_init=0x600, ble_name, ble_count, ble_services, ble_address=0x605,
     ble_adv_fields, ble_scan_fields, ble_advertise, ble_ready_timeout, ble_reset, ble_notify,
+    // 追加编号，不改变已有错误点；0x620段用于上位机本地错误，raw保留DOMException.code。
+    ble_connect=0x60c, ble_disconnect, ble_command, ble_command_timeout, ble_conn_update,
+    ble_web_write_timeout=0x620, ble_web_gatt, ble_web_telemetry,
     wifi_init=0x700
 };
 

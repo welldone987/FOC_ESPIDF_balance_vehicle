@@ -10,6 +10,7 @@
 #include <string_view>
 
 #include "esp_timer.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -39,7 +40,8 @@ namespace {
 ble_uuid128_t service_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x01));
 ble_uuid128_t command_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x02));
 ble_uuid128_t telemetry_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x07));
-ble_gatt_chr_def characteristics[3]{};
+ble_uuid128_t diagnostic_uuid = BLE_UUID128_INIT(BALANCE_UUID_BYTES(0x08));
+ble_gatt_chr_def characteristics[4]{};
 ble_gatt_svc_def services[2]{};
 struct Incoming {
     char text[20]{};
@@ -62,6 +64,45 @@ std::uint16_t telemetry_handle{};
 bool subscribed=false;
 QueueHandle_t telemetry_queue{};
 ble_npl_callout telemetry_timer{};
+// .008 READ固定事件文本，WRITE小端seq确认；同一事件的长读不会推进游标。
+diagnostics::Event offered_event{};
+std::uint32_t diagnostic_cursor{}, serial_cursor{};
+bool replay_first_fault=true;
+char diagnostic_text[512]{"none"};
+std::int64_t last_notify_error_us{};
+unsigned notify_failures{};
+void rememberBle(int rc, ErrorPoint point);
+
+void prepareDiagnostic()
+{
+    if (offered_event.event_seq) { return; }
+    if (diagnostics::readEvent(diagnostic_cursor,offered_event,replay_first_fault)) {
+        if (!(offered_event.flags & 2)) { replay_first_fault=false; }
+        diagnostics::formatEvent(offered_event,diagnostic_text,sizeof(diagnostic_text));
+    } else { std::strcpy(diagnostic_text,"none"); }
+}
+
+int diagnosticAccess(std::uint16_t conn, std::uint16_t, ble_gatt_access_ctxt *context, void *)
+{
+    if (!context || !context->om || conn!=connection_handle) { return BLE_ATT_ERR_UNLIKELY; }
+    if (context->op==BLE_GATT_ACCESS_OP_READ_CHR) {
+        return os_mbuf_append(context->om,diagnostic_text,std::strlen(diagnostic_text))==0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+    }
+    if (context->op!=BLE_GATT_ACCESS_OP_WRITE_CHR) { return BLE_ATT_ERR_WRITE_NOT_PERMITTED; }
+    std::uint8_t bytes[4]{};
+    std::uint16_t copied{};
+    if (OS_MBUF_PKTLEN(context->om)!=4 || ble_hs_mbuf_to_flat(context->om,bytes,4,&copied)!=0 || copied!=4) {
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
+    const std::uint32_t seq=bytes[0] | (std::uint32_t{bytes[1]}<<8) | (std::uint32_t{bytes[2]}<<16) | (std::uint32_t{bytes[3]}<<24);
+    if (!seq || seq!=offered_event.event_seq) { return BLE_ATT_ERR_VALUE_NOT_ALLOWED; }
+    // 首故障先重放，之后从环中最早保留事件开始；独立首故障不能跳过较早非致命事件。
+    if (replay_first_fault) { replay_first_fault=false; }
+    else { diagnostic_cursor=seq; }
+    offered_event={};
+    prepareDiagnostic();
+    return 0;
+}
 
 TelemetryPacket latestTelemetry()
 {
@@ -73,12 +114,21 @@ TelemetryPacket latestTelemetry()
 // 定时事件与GAP回调均在NimBLE主机执行，句柄/订阅状态不跨任务共享。
 void sendTelemetry(ble_npl_event *)
 {
+    prepareDiagnostic();
     if (subscribed && connection_handle!=BLE_HS_CONN_HANDLE_NONE) {
         const auto packet=latestTelemetry();
         auto *buffer=ble_hs_mbuf_from_flat(packet.data(),packet.size());
-        if (buffer) {
-            // NimBLE接管mbuf，发送失败也不能再次释放；拥塞时丢弃本帧。
-            (void)ble_gatts_notify_custom(connection_handle,telemetry_handle,buffer);
+        // NimBLE接管mbuf，发送失败也不能再次释放。
+        const int rc=buffer ? ble_gatts_notify_custom(connection_handle,telemetry_handle,buffer) : BLE_HS_ENOMEM;
+        if (rc) {
+            ++notify_failures;
+            const auto now=esp_timer_get_time();
+            if (!last_notify_error_us || now-last_notify_error_us>=1000000) {
+                ErrorInfo error{};
+                VEHICLE_ERROR(&error,ESP_FAIL,ble_notify,nimble,rc,static_cast<float>(notify_failures),0,-1,1);
+                diagnostics::record(error);
+                last_notify_error_us=now;
+            }
         }
     }
     (void)ble_npl_callout_reset(&telemetry_timer,ble_npl_time_ms_to_ticks32(100));
@@ -125,15 +175,29 @@ int gapEvent(ble_gap_event *event, void *)
                 return 0;
             }
             connection_handle = event->connect.conn_handle;
+            diagnostic_cursor=0; offered_event={}; replay_first_fault=true; prepareDiagnostic();
+            ble_gap_conn_desc desc{};
+            if (ble_gap_conn_find(connection_handle,&desc)==0) {
+                ESP_LOGI("ble","CONNECTED handle=%u interval_ms=%g latency=%u supervision_ms=%u",connection_handle,
+                    desc.conn_itvl*1.25,desc.conn_latency,desc.supervision_timeout*10);
+            }
             subscribed=false;
             publishConnection(true);
         } else {
+            rememberBle(event->connect.status,ErrorPoint::ble_connect);
             (void)startAdvertising();
         }
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
         if (event->disconnect.conn.conn_handle != connection_handle) { return 0; }
+        {
+            ErrorInfo error{};
+            const auto &conn=event->disconnect.conn;
+            VEHICLE_ERROR(&error,ESP_FAIL,ble_disconnect,nimble,event->disconnect.reason,
+                conn.conn_itvl*1.25f,conn.supervision_timeout*10.0f,conn.conn_latency,7);
+            diagnostics::record(error);
+        }
         connection_handle = BLE_HS_CONN_HANDLE_NONE;
         subscribed=false;
         publishConnection(false);
@@ -142,6 +206,17 @@ int gapEvent(ble_gap_event *event, void *)
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
         (void)startAdvertising();
+        return 0;
+
+    case BLE_GAP_EVENT_CONN_UPDATE:
+        rememberBle(event->conn_update.status,ErrorPoint::ble_conn_update);
+        {
+            ble_gap_conn_desc desc{};
+            if (ble_gap_conn_find(event->conn_update.conn_handle,&desc)==0) {
+                ESP_LOGI("ble","CONN_UPDATE interval_ms=%g latency=%u supervision_ms=%u",desc.conn_itvl*1.25,
+                    desc.conn_latency,desc.supervision_timeout*10);
+            }
+        }
         return 0;
 
     case BLE_GAP_EVENT_SUBSCRIBE:
@@ -249,10 +324,12 @@ int characteristicAccess(std::uint16_t conn_handle,
     Incoming input{};
     input.length=OS_MBUF_PKTLEN(context->om);
     if (input.length == 0 || input.length > sizeof(input.text)) {
+        rememberBle(BLE_HS_ATT_ERR(BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN),ErrorPoint::ble_command);
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
     std::uint16_t copied{};
     if (ble_hs_mbuf_to_flat(context->om,input.text,input.length,&copied) != 0 || copied != input.length) {
+        rememberBle(BLE_HS_ATT_ERR(BLE_ATT_ERR_UNLIKELY),ErrorPoint::ble_command);
         return BLE_ATT_ERR_UNLIKELY;
     }
     input.connected=true;
@@ -290,6 +367,9 @@ esp_err_t initialize(QueueHandle_t snapshots, ErrorInfo *error)
     characteristics[1].access_cb = telemetryAccess;
     characteristics[1].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY;
     characteristics[1].val_handle = &telemetry_handle;
+    characteristics[2].uuid = &diagnostic_uuid.u;
+    characteristics[2].access_cb = diagnosticAccess;
+    characteristics[2].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE;
 
     services[0].type = BLE_GATT_SVC_TYPE_PRIMARY;
     services[0].uuid = &service_uuid.u;
@@ -327,9 +407,22 @@ esp_err_t initialize(QueueHandle_t snapshots, ErrorInfo *error)
 void run(QueueHandle_t command_queue)
 {
     std::uint32_t epoch{};
+    std::int64_t next_serial_us{};
     for (;;) {
+        // 低优先级BleTask打印，避免串口吞吐占用NimBLE主机回调或ControlTask。
+        const auto now=esp_timer_get_time();
+        if (now>=next_serial_us) {
+            next_serial_us=now+100000;
+            diagnostics::Event event{};
+            if (diagnostics::readEvent(serial_cursor,event)) {
+                char text[512]{};
+                diagnostics::formatEvent(event,text,sizeof(text));
+                ESP_LOGW("diagnostic","%s",text);
+                serial_cursor=event.event_seq;
+            }
+        }
         Incoming input{};
-        if (xQueueReceive(incoming_queue,&input,portMAX_DELAY) != pdTRUE) { continue; }
+        if (xQueueReceive(incoming_queue,&input,pdMS_TO_TICKS(100)) != pdTRUE) { continue; }
         if (input.epoch != epoch) {
             epoch=input.epoch;
             const control::MotionCommand zero{};
@@ -337,10 +430,18 @@ void run(QueueHandle_t command_queue)
         }
         if (!input.connected || input.length == 0) { continue; }
         RemoteCommand parsed{};
-        if (!parseCommand(std::string_view(input.text,input.length),parsed)) { continue; }
+        if (!parseCommand(std::string_view(input.text,input.length),parsed)) {
+            ErrorInfo error{};
+            VEHICLE_ERROR(&error,ESP_ERR_INVALID_ARG,ble_command,application,0,static_cast<float>(input.length),20,-1,3);
+            diagnostics::record(error);
+            // 无效输入不能让旧非零目标继续有效。
+            const control::MotionCommand zero{};
+            xQueueOverwrite(command_queue,&zero);
+            continue;
+        }
         const control::MotionCommand command{
             parsed.throttle * control::config::kDriveSpeedLimitRadS / 100.0f,
-            -parsed.steering * control::config::kYawRateLimitRadS / 100.0f,
+            parsed.steering * control::config::kYawRateLimitRadS / 100.0f,
             input.received_us,true};
         // 长度1最新值语义；过期判断使用接收时刻，不能因排队延长寿命。
         xQueueOverwrite(command_queue,&command);

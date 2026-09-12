@@ -137,6 +137,7 @@ void controlTask(void *argument)
     std::uint32_t sequence = 0U;
     std::uint32_t balance_cycles=0U, skipped_releases=0U;
     bool was_balancing = false;
+    bool was_driving = false;
     bool current_saturated = false;
     std::int64_t previous_cycle_us = 0;
     std::int64_t previous_attitude_us = previous_cycle_us;
@@ -160,6 +161,14 @@ void controlTask(void *argument)
         // 非阻塞读取最新目标；ControlTask独立检查时效，包括BleTask饥饿的情况。
         (void)xQueueReceive(context.command_queue,&latest_command,0);
         const bool driving=control::freshCommand(latest_command,cycle_time_us,command_ready_us);
+        if (was_driving && !driving && latest_command.valid) {
+            ErrorInfo timeout{};
+            VEHICLE_ERROR(&timeout,ESP_ERR_TIMEOUT,ble_command_timeout,application,0,
+                static_cast<float>(cycle_time_us-latest_command.received_us),
+                static_cast<float>(control::kCommandTimeoutUs),-1,3,1);
+            diagnostics::record(timeout); // 只复制；串口格式化在BleTask低频观察。
+        }
+        was_driving=driving;
         const auto command=driving ? latest_command : control::MotionCommand{};
         const bool balancing=true;
         const bool starting = balancing && !was_balancing;

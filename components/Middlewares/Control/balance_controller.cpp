@@ -1,8 +1,8 @@
 #include "balance_controller.hpp"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include "control_config.hpp"
-#include "motor_config.hpp"
 
 namespace vehicle {
 namespace control {
@@ -65,7 +65,7 @@ ControlOutput update(ControllerState &s, const ControlInput &in, float dt)
         const float yaw_ff = config::kYawAccelerationFeedforward * yaw_acceleration +
             config::kYawRateFeedforward * s.yaw_reference_rad_s;
         s.turn_request_a = pi(s.yaw_reference_rad_s - yaw,
-            config::kYawKpAPerRadS, config::kYawKiAPerRad, yaw_ff, motor::config::kCurrentLimitA,
+            config::kYawKpAPerRadS, config::kYawKiAPerRad, yaw_ff, std::numeric_limits<float>::max(),
             outer_dt, s.turn_saturated, s.yaw_integral_a);
         s.balance_saturated = false;
         s.turn_saturated = false;
@@ -78,14 +78,12 @@ ControlOutput update(ControllerState &s, const ControlInput &in, float dt)
         initialize(s);
         return {};
     }
-    const float balance = limited(request, motor::config::kCurrentLimitA);
-    const float turn = limited(s.turn_request_a, motor::config::kCurrentLimitA - std::abs(balance));
-    // 汇总整个外环窗口的饱和，不能仅保留最后一次结果。
-    s.balance_saturated |= std::abs(request) > motor::config::kCurrentLimitA;
-    s.turn_saturated |= std::abs(s.turn_request_a) > motor::config::kCurrentLimitA - std::abs(balance);
+    // 仅混合物理电流请求；每轮±1A统一由BSP电流环入口限制并反馈饱和。
+    const float balance = request;
+    const float turn = s.turn_request_a;
     return {s.target_pitch_rad + config::kPitchOffsetRad, balance, turn,
             balance - turn, balance + turn,
-            std::isfinite(balance) && std::isfinite(turn)};
+            std::isfinite(balance - turn) && std::isfinite(balance + turn)};
 }
 } // namespace control
 } // namespace vehicle
