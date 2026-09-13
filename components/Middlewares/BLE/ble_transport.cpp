@@ -242,10 +242,9 @@ esp_err_t Create(const AccessHandlers &handlers, QueueHandle_t queue, ErrorInfo 
     // 建立命令、遥测和诊断特征与主服务定义。
     characteristics[0].uuid = &command_uuid.u;
     characteristics[0].access_cb = access_handlers.command;
-    characteristics[0].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE;
+    characteristics[0].flags = BLE_GATT_CHR_F_WRITE;
     characteristics[1].uuid = &telemetry_uuid.u;
-    characteristics[1].access_cb = access_handlers.telemetry;
-    characteristics[1].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY;
+    characteristics[1].flags = BLE_GATT_CHR_F_NOTIFY;
     characteristics[1].val_handle = &telemetry_handle;
     characteristics[2].uuid = &diagnostic_uuid.u;
     characteristics[2].access_cb = access_handlers.diagnostic;
@@ -297,8 +296,6 @@ std::uint32_t ConnectionEpoch() { return connection_epoch; }
 std::uint16_t ConnectionHandle() { return connection_handle; }
 
 bool Subscribed() { return subscribed; }
-
-void SetSubscribed(bool value) { subscribed=value; }
 
 int Notify(const std::uint8_t *data, std::size_t size)
 {

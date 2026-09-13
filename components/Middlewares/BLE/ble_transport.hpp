@@ -36,10 +36,9 @@ struct Incoming {
 using AccessHandler = int (*)(std::uint16_t conn_handle, std::uint16_t attr_handle,
                               ble_gatt_access_ctxt *context, void *argument);
 
-// AccessHandlers把三个特征的访问回调交给transport注册。
+// AccessHandlers把命令与诊断特征的访问回调交给transport注册；遥测特征只提供通知。
 struct AccessHandlers {
     AccessHandler command{};
-    AccessHandler telemetry{};
     AccessHandler diagnostic{};
 };
 
@@ -65,7 +64,6 @@ esp_err_t Start(ErrorInfo *error=nullptr);
 std::uint32_t ConnectionEpoch();
 std::uint16_t ConnectionHandle();
 bool Subscribed();
-void SetSubscribed(bool subscribed);
 // Notify()通过遥测特征发送一帧数据；mbuf所有权交给NimBLE。
 int Notify(const std::uint8_t *data, std::size_t size);
 // RememberBle()把NimBLE返回码记录为ErrorInfo事件。

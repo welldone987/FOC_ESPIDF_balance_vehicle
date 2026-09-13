@@ -37,17 +37,13 @@ QueueHandle_t incoming_queue{};
 // initialized避免重复初始化。
 bool initialized=false;
 
-// OnCommandAccess()处理命令特征的READ说明与WRITE报文复制。
+// OnCommandAccess()把命令特征的WRITE报文复制到长度1队列。
 int OnCommandAccess(std::uint16_t conn_handle,
                     std::uint16_t,
                     ble_gatt_access_ctxt *context,
                     void *)
 {
     if (context == nullptr || context->om == nullptr) { return BLE_ATT_ERR_UNLIKELY; }
-    if (context->op == BLE_GATT_ACCESS_OP_READ_CHR) {
-        constexpr char response[]="X,Y; range=-100..100";
-        return os_mbuf_append(context->om,response,sizeof(response)-1)==0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
-    }
     if (context->op != BLE_GATT_ACCESS_OP_WRITE_CHR || conn_handle != transport::ConnectionHandle()) {
         return BLE_ATT_ERR_WRITE_NOT_PERMITTED;
     }
@@ -82,7 +78,7 @@ esp_err_t Initialize(QueueHandle_t telemetry_queue, ErrorInfo *error)
     incoming_queue=xQueueCreateStatic(1,sizeof(transport::Incoming),incoming_buffer,&incoming_storage);
     if (!incoming_queue) { return VEHICLE_ERROR(error,ESP_ERR_NO_MEM,boot_resource,application,0); }
 
-    const transport::AccessHandlers handlers{&OnCommandAccess,&telemetry::OnAccess,&diagnostic::OnAccess};
+    const transport::AccessHandlers handlers{&OnCommandAccess,&diagnostic::OnAccess};
     esp_err_t rc=transport::Create(handlers,incoming_queue,error);
     if (rc != ESP_OK) { return rc; }
     telemetry::Initialize(telemetry_queue);

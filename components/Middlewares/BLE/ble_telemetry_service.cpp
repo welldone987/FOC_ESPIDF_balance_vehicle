@@ -10,7 +10,6 @@
 
 #include "host/ble_hs.h"
 #include "nimble/nimble_port.h"
-#include "os/os_mbuf.h"
 
 namespace vehicle {
 namespace ble {
@@ -72,15 +71,6 @@ int Stop()
 {
     ble_npl_callout_stop(&telemetry_timer);
     return 0;
-}
-
-int OnAccess(std::uint16_t, std::uint16_t, ble_gatt_access_ctxt *context, void *)
-{
-    if (!context || !context->om || context->op!=BLE_GATT_ACCESS_OP_READ_CHR) {
-        return BLE_ATT_ERR_READ_NOT_PERMITTED;
-    }
-    const auto packet=LatestTelemetry();
-    return os_mbuf_append(context->om,packet.data(),packet.size())==0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
 }
 
 } // namespace telemetry
