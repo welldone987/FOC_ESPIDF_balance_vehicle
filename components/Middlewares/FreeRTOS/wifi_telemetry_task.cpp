@@ -1,7 +1,5 @@
 #include "freertos_tasks.hpp"
 
-#if CONFIG_VEHICLE_WIFI_ENABLED
-
 #include "telemetry_snapshot.hpp"
 #include "wifi_telemetry.hpp"
 #include "wifi_telemetry_config.hpp"
@@ -10,7 +8,7 @@ namespace vehicle {
 namespace freertos_tasks {
 namespace {
 
-// wifi_storage和wifi_stack是可选Wi-Fi服务任务的静态TCB与栈。
+// wifi_storage和wifi_stack是Wi-Fi服务任务的静态TCB与栈。
 StaticTask_t wifi_storage{};
 StackType_t wifi_stack[WifiStackBytes]{};
 
@@ -44,5 +42,3 @@ void WifiTelemetryTask(void *argument)
 
 } // namespace freertos_tasks
 } // namespace vehicle
-
-#endif

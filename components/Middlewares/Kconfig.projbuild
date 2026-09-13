@@ -1,9 +1,5 @@
 menu "Vehicle Wi-Fi telemetry"
 
-    config VEHICLE_WIFI_ENABLED
-        bool "Enable Wi-Fi and TCP telemetry resources"
-        default y
-
     # station连接使用的网络名称；空值会使Wi-Fi初始化返回参数错误。
     config VEHICLE_WIFI_SSID
         string "Wi-Fi station SSID"

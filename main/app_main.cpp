@@ -10,12 +10,11 @@
 #include "esp_core_dump.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-#include "sdkconfig.h"
 
 namespace {
 /*
  * app_main建立静态任务与队列，按固定顺序完成启动检查。
- * 必要步骤失败时禁用输出并锁存诊断；可选Wi-Fi失败只降级。
+ * 必要步骤失败时禁用输出并锁存诊断；Wi-Fi失败只降级。
  * BleTask就绪后才创建ControlTask并进入低频观察。
  */
 // command_storage等四组缓冲是命令队列与BLE启动结果的长度1静态队列。
@@ -95,7 +94,6 @@ extern "C" void app_main(void)
     }
     if (!Finish(BootStep::ble,startup.result,startup.error)) { return; }
 
-#if CONFIG_VEHICLE_WIFI_ENABLED
     vehicle::diagnostics::Boot(BootStep::wifi,"BEGIN");
     rc=vehicle::wifi_telemetry::Initialize();
     if (rc == ESP_OK) {
@@ -104,9 +102,6 @@ extern "C" void app_main(void)
     }
     if (rc != ESP_OK) { VEHICLE_ERROR(&error,rc,wifi_init,esp,rc); }
     Finish(BootStep::wifi,rc,error,false);
-#else
-    vehicle::diagnostics::Boot(BootStep::wifi,"SKIP");
-#endif
     const auto task=vehicle::freertos_tasks::CreateControlTask(context);
     if (!task) {
         VEHICLE_ERROR(&error,ESP_ERR_NO_MEM,boot_resource,application,0);

@@ -1,5 +1,3 @@
-#include "sdkconfig.h"
-#if CONFIG_VEHICLE_WIFI_ENABLED
 #include "wifi_telemetry.hpp"
 
 #include "sdkconfig.h"
@@ -225,10 +223,6 @@ void Service(const control::TelemetrySnapshot *snapshot)
     }
 
     reconnect_pending = false;
-    if (!TcpDebugEnabled) {
-        CloseSockets();
-        return;
-    }
 
     if (listener_socket < 0) {
         // 监听socket只接受一个客户端，所有socket操作均保持非阻塞。
@@ -344,4 +338,3 @@ void Service(const control::TelemetrySnapshot *snapshot)
 } // namespace wifi_telemetry
 } // namespace vehicle
 
-#endif

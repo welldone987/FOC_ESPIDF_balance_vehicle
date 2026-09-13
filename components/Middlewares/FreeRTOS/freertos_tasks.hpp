@@ -30,10 +30,8 @@ void BleTask(void *argument);
 // CreateControlTask()创建静态ControlTask并返回句柄；失败返回nullptr。
 TaskHandle_t CreateControlTask(TaskContext &context);
 void ControlTask(void *argument);
-#if CONFIG_VEHICLE_WIFI_ENABLED
 // CreateWifiTelemetryTask()创建静态WifiTelemetryTask并返回句柄；失败返回nullptr。
 TaskHandle_t CreateWifiTelemetryTask(TaskContext &context);
 void WifiTelemetryTask(void *argument);
-#endif
 } // namespace freertos_tasks
 } // namespace vehicle

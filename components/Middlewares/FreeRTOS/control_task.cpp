@@ -21,7 +21,7 @@ namespace freertos_tasks {
 namespace {
 
 /*
- * 控制任务独占传感器与执行器；可选Wi-Fi任务消费最新遥测。
+ * 控制任务独占传感器与执行器；Wi-Fi任务消费最新遥测。
  * 初始化完成后开始本地零速平衡；BleTask只提供速度和转向目标。
  */
 
@@ -259,7 +259,7 @@ void ControlTask(void *argument)
         diagnostics::CommitControlSnapshot({cycle_time_us,sequence,attitude.pitch_deg,
             wheels.velocity_M0_rad_s,wheels.velocity_M1_rad_s,output.target_M0_A,output.target_M1_A,
             current.sample_M0.iq_measured_A,current.sample_M1.iq_measured_A,cycle_dt_s,true});
-        // snapshot发布到遥测队列，供BLE .007和可选Wi-Fi消费。
+        // snapshot发布到遥测队列，供BLE .007和Wi-Fi消费。
         const control::TelemetrySnapshot snapshot{
             cycle_time_us, sequence, attitude.pitch_deg,
             wheels.velocity_M0_rad_s, wheels.velocity_M1_rad_s,
