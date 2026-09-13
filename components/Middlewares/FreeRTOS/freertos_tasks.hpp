@@ -9,7 +9,7 @@
 namespace vehicle {
 namespace freertos_tasks {
 /*
- * application_tasks创建BleTask、ControlTask和可选WifiTelemetryTask。
+ * freertos_tasks保存任务共享的队列句柄与启动结果类型，声明各任务入口与静态创建函数。
  * 三级长度1静态队列分别传递原始报文、运动命令和遥测快照。
  * ControlTask独占电机与传感器；服务任务只消费队列。
  */
@@ -24,9 +24,15 @@ struct TaskContext {
     // telemetry_queue保存最近一帧TelemetrySnapshot。
     QueueHandle_t telemetry_queue{};
 };
+// CreateBleTask()创建静态BleTask并返回句柄；失败返回nullptr。
+TaskHandle_t CreateBleTask(TaskContext &context);
 void BleTask(void *argument);
+// CreateControlTask()创建静态ControlTask并返回句柄；失败返回nullptr。
+TaskHandle_t CreateControlTask(TaskContext &context);
 void ControlTask(void *argument);
 #if CONFIG_VEHICLE_WIFI_ENABLED
+// CreateWifiTelemetryTask()创建静态WifiTelemetryTask并返回句柄；失败返回nullptr。
+TaskHandle_t CreateWifiTelemetryTask(TaskContext &context);
 void WifiTelemetryTask(void *argument);
 #endif
 } // namespace freertos_tasks

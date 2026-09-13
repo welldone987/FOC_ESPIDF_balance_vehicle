@@ -1,4 +1,4 @@
-#include "application_tasks.hpp"
+#include "freertos_tasks.hpp"
 #include "motion_command.hpp"
 #include "diagnostics.hpp"
 #include "motor_foc_service.hpp"
@@ -18,26 +18,15 @@ namespace {
  * 必要步骤失败时禁用输出并锁存诊断；可选Wi-Fi失败只降级。
  * BleTask就绪后才创建ControlTask并进入低频观察。
  */
-// ble_storage和ble_stack是BleTask的静态TCB与栈。
-StaticTask_t ble_storage{};
-StackType_t ble_stack[vehicle::freertos_tasks::BleStackBytes]{};
 // command_storage等四组缓冲是命令队列与BLE启动结果的长度1静态队列。
 StaticQueue_t command_storage{}, ble_startup_storage{};
 std::uint8_t command_buffer[sizeof(vehicle::control::MotionCommand)]{};
 std::uint8_t ble_startup_buffer[sizeof(vehicle::freertos_tasks::BleStartup)]{};
-// control_storage和control_stack是ControlTask的静态TCB与栈。
-StaticTask_t control_storage{};
-StackType_t control_stack[vehicle::freertos_tasks::ControlStackBytes]{};
 // context保存三个队列句柄，供任务创建时传入。
 vehicle::freertos_tasks::TaskContext context{};
 // queue_storage和queue_buffer是遥测快照的长度1静态队列。
 StaticQueue_t queue_storage{};
 std::uint8_t queue_buffer[sizeof(vehicle::control::TelemetrySnapshot)]{};
-#if CONFIG_VEHICLE_WIFI_ENABLED
-// wifi_storage和wifi_stack是可选Wi-Fi服务任务的静态TCB与栈。
-StaticTask_t wifi_storage{};
-StackType_t wifi_stack[vehicle::freertos_tasks::WifiStackBytes]{};
-#endif
 // Finish()在启动步骤失败时禁用输出、记录诊断并返回false。
 bool Finish(vehicle::diagnostics::BootStep step, esp_err_t rc,
     const vehicle::ErrorInfo &error, bool required=true)
@@ -93,8 +82,7 @@ extern "C" void app_main(void)
     context.telemetry_queue=xQueueCreateStatic(1,sizeof(vehicle::control::TelemetrySnapshot),queue_buffer,&queue_storage);
     context.ble_startup_queue=xQueueCreateStatic(1,sizeof(vehicle::freertos_tasks::BleStartup),ble_startup_buffer,&ble_startup_storage);
     if (!context.command_queue || !context.telemetry_queue || !context.ble_startup_queue ||
-        !xTaskCreateStaticPinnedToCore(vehicle::freertos_tasks::BleTask,"BleTask",vehicle::freertos_tasks::BleStackBytes,
-            &context,vehicle::freertos_tasks::BlePriority,ble_stack,&ble_storage,vehicle::freertos_tasks::ServiceCore)) {
+        !vehicle::freertos_tasks::CreateBleTask(context)) {
         rc=VEHICLE_ERROR(&error,ESP_ERR_NO_MEM,boot_resource,application,0);
         Finish(BootStep::ble,rc,error);
         return;
@@ -111,8 +99,7 @@ extern "C" void app_main(void)
     vehicle::diagnostics::Boot(BootStep::wifi,"BEGIN");
     rc=vehicle::wifi_telemetry::Initialize();
     if (rc == ESP_OK) {
-        const auto task=xTaskCreateStaticPinnedToCore(vehicle::freertos_tasks::WifiTelemetryTask,"WifiTelemetryTask",
-            vehicle::freertos_tasks::WifiStackBytes,&context,vehicle::freertos_tasks::WifiPriority,wifi_stack,&wifi_storage,vehicle::freertos_tasks::ServiceCore);
+        const auto task=vehicle::freertos_tasks::CreateWifiTelemetryTask(context);
         if (!task) { rc=ESP_ERR_NO_MEM; }
     }
     if (rc != ESP_OK) { VEHICLE_ERROR(&error,rc,wifi_init,esp,rc); }
@@ -120,8 +107,7 @@ extern "C" void app_main(void)
 #else
     vehicle::diagnostics::Boot(BootStep::wifi,"SKIP");
 #endif
-    const auto task=xTaskCreateStaticPinnedToCore(vehicle::freertos_tasks::ControlTask,"ControlTask",
-        vehicle::freertos_tasks::ControlStackBytes,&context,vehicle::freertos_tasks::ControlPriority,control_stack,&control_storage,vehicle::freertos_tasks::ControlCore);
+    const auto task=vehicle::freertos_tasks::CreateControlTask(context);
     if (!task) {
         VEHICLE_ERROR(&error,ESP_ERR_NO_MEM,boot_resource,application,0);
         Finish(BootStep::timer,ESP_ERR_NO_MEM,error);

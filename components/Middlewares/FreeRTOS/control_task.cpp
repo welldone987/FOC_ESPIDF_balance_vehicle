@@ -1,7 +1,6 @@
-#include "application_tasks.hpp"
+#include "freertos_tasks.hpp"
 
 #include "balance_controller.hpp"
-#include "ble_command_service.hpp"
 #include "control_config.hpp"
 #include "control_timing.hpp"
 #include "motion_command.hpp"
@@ -11,8 +10,6 @@
 #include "encoder_config.hpp"
 #include "motor_config.hpp"
 #include "motor_foc_service.hpp"
-#include "wifi_telemetry.hpp"
-#include "wifi_telemetry_config.hpp"
 
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -28,6 +25,9 @@ namespace {
  * 初始化完成后开始本地零速平衡；BleTask只提供速度和转向目标。
  */
 
+// control_storage和control_stack是ControlTask的静态TCB与栈。
+StaticTask_t control_storage{};
+StackType_t control_stack[ControlStackBytes]{};
 // control_timer是周期通知控制任务的ESP定时器句柄。
 esp_timer_handle_t control_timer{};
 // 仅ControlTask访问。
@@ -76,17 +76,11 @@ void ReleaseControl(void *task_handle)
 
 } // namespace
 
-// BleTask初始化BLE并把结果写入启动队列，随后进入报文消费循环。
-void BleTask(void *argument)
+// CreateControlTask()创建静态ControlTask并返回句柄；失败返回nullptr。
+TaskHandle_t CreateControlTask(TaskContext &context)
 {
-    auto &context=*static_cast<TaskContext *>(argument);
-    BleStartup startup{};
-    startup.result=ble::Initialize(context.telemetry_queue,&startup.error);
-    xQueueOverwrite(context.ble_startup_queue,&startup);
-    if (startup.result == ESP_OK) { ble::Run(context.command_queue); }
-    // 初始化失败不重试，也不放行控制。
-    // 静态任务资源保留供诊断。
-    for (;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    return xTaskCreateStaticPinnedToCore(ControlTask,"ControlTask",ControlStackBytes,
+        &context,ControlPriority,control_stack,&control_storage,ControlCore);
 }
 
 // ControlTask完成硬件初始化、启动控制定时器并进入500Hz控制循环。
@@ -282,27 +276,6 @@ void ControlTask(void *argument)
         diagnostics::CommitControlTiming(cycle_timing);
     }
 }
-#if CONFIG_VEHICLE_WIFI_ENABLED
-// WifiTelemetryTask按ServicePeriod_ms消费最新遥测快照。
-void WifiTelemetryTask(void *argument)
-{
-    // Wi-Fi服务运行在低频服务任务中，与控制任务共享最新值队列。
-    [[maybe_unused]] auto &context = *static_cast<TaskContext *>(argument);
-    // release使用绝对唤醒时刻，减少服务周期随执行耗时漂移。
-    TickType_t release = xTaskGetTickCount();
-    for (;;) {
-        vTaskDelayUntil(&release, pdMS_TO_TICKS(wifi_telemetry::ServicePeriod_ms));
-        // xQueuePeek()复制最新快照但不移除队列中的值。
-        control::TelemetrySnapshot snapshot{};
-        const control::TelemetrySnapshot *latest = nullptr;
-        if (xQueuePeek(context.telemetry_queue, &snapshot, 0U) == pdPASS) {
-            latest = &snapshot;
-        }
-        wifi_telemetry::Service(latest);
-    }
-}
-
-#endif
 
 } // namespace freertos_tasks
 } // namespace vehicle
