@@ -1,30 +1,18 @@
 #include "freertos_tasks.hpp"
-#include "motion_command.hpp"
 #include "diagnostics.hpp"
 #include "motor_foc_service.hpp"
-#include "power_config.hpp"
 #include "power_monitor.hpp"
-#include "wifi_telemetry.hpp"
-#include "telemetry_snapshot.hpp"
-#include "ble_config.hpp"
 #include "esp_log.h"
 #include "nvs_flash.h"
 
 namespace {
 /*
- * app_main建立静态任务与队列，按固定顺序完成启动检查。
+ * app_main按启动顺序调用各模块初始化入口，并保留必要的失败策略。
  * 必要步骤失败时禁用输出并锁存诊断；Wi-Fi失败只降级。
  * BleTask就绪后才创建ControlTask并进入低频观察。
  */
-// command_storage等四组缓冲是命令队列与BLE启动结果的长度1静态队列。
-StaticQueue_t command_storage{}, ble_startup_storage{};
-std::uint8_t command_buffer[sizeof(vehicle::control::MotionCommand)]{};
-std::uint8_t ble_startup_buffer[sizeof(vehicle::freertos_tasks::BleStartup)]{};
-// context保存三个队列句柄，供任务创建时传入。
+// context保存StartBle()创建的三组长度1静态队列句柄，供全部任务共享。
 vehicle::freertos_tasks::TaskContext context{};
-// queue_storage和queue_buffer是遥测快照的长度1静态队列。
-StaticQueue_t queue_storage{};
-std::uint8_t queue_buffer[sizeof(vehicle::control::TelemetrySnapshot)]{};
 // Finish()在启动步骤失败时禁用输出、记录诊断并返回false。
 bool Finish(vehicle::diagnostics::BootStep step, esp_err_t rc,
     const vehicle::ErrorInfo &error, bool required=true)
@@ -53,43 +41,16 @@ extern "C" void app_main(void)
     vehicle::diagnostics::Boot(BootStep::power,"BEGIN");
     if (!Finish(BootStep::power,vehicle::power::Initialize(&error),error)) { return; }
     vehicle::diagnostics::Boot(BootStep::voltage,"BEGIN");
-    float voltage_V{};
-    rc=vehicle::power::ReadBusVoltage(&voltage_V,&error);
-    if (rc == ESP_OK && voltage_V <= vehicle::power::StartupUndervoltageThreshold_V) {
-        rc=VEHICLE_ERROR(&error,ESP_ERR_INVALID_STATE,undervoltage,application,0,
-            voltage_V,vehicle::power::StartupUndervoltageThreshold_V,-1,3,-1);
-    }
-    if (!Finish(BootStep::voltage,rc,error)) { return; }
+    if (!Finish(BootStep::voltage,vehicle::power::CheckStartupVoltage(&error),error)) { return; }
     vehicle::diagnostics::Boot(BootStep::nvs,"BEGIN");
     rc=nvs_flash_init();
     if (rc != ESP_OK) { VEHICLE_ERROR(&error,rc,nvs,esp,rc); }
     if (!Finish(BootStep::nvs,rc,error)) { return; }
     vehicle::diagnostics::Boot(BootStep::ble,"BEGIN");
-    context.command_queue=xQueueCreateStatic(1,sizeof(vehicle::control::MotionCommand),command_buffer,&command_storage);
-    context.telemetry_queue=xQueueCreateStatic(1,sizeof(vehicle::control::TelemetrySnapshot),queue_buffer,&queue_storage);
-    context.ble_startup_queue=xQueueCreateStatic(1,sizeof(vehicle::freertos_tasks::BleStartup),ble_startup_buffer,&ble_startup_storage);
-    if (!context.command_queue || !context.telemetry_queue || !context.ble_startup_queue ||
-        !vehicle::freertos_tasks::CreateBleTask(context)) {
-        rc=VEHICLE_ERROR(&error,ESP_ERR_NO_MEM,boot_resource,application,0);
-        Finish(BootStep::ble,rc,error);
-        return;
-    }
-    vehicle::freertos_tasks::BleStartup startup{};
-    // BleTask完成首次广播后才放行控制初始化。
-    // 初始化结果也通过静态队列传递。
-    if (xQueueReceive(context.ble_startup_queue,&startup,pdMS_TO_TICKS(vehicle::ble::StartupWait_ms)) != pdTRUE) {
-        startup.result=VEHICLE_ERROR(&startup.error,ESP_ERR_TIMEOUT,ble_ready_timeout,application,0);
-    }
-    if (!Finish(BootStep::ble,startup.result,startup.error)) { return; }
+    if (!Finish(BootStep::ble,vehicle::freertos_tasks::StartBle(context,&error),error)) { return; }
 
     vehicle::diagnostics::Boot(BootStep::wifi,"BEGIN");
-    rc=vehicle::wifi_telemetry::Initialize();
-    if (rc == ESP_OK) {
-        const auto task=vehicle::freertos_tasks::CreateWifiTelemetryTask(context);
-        if (!task) { rc=ESP_ERR_NO_MEM; }
-    }
-    if (rc != ESP_OK) { VEHICLE_ERROR(&error,rc,wifi_init,esp,rc); }
-    Finish(BootStep::wifi,rc,error,false);
+    Finish(BootStep::wifi,vehicle::freertos_tasks::StartWifiTelemetry(context,&error),error,false);
     const auto task=vehicle::freertos_tasks::CreateControlTask(context);
     if (!task) {
         VEHICLE_ERROR(&error,ESP_ERR_NO_MEM,boot_resource,application,0);

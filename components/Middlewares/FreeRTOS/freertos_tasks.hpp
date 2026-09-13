@@ -24,6 +24,10 @@ struct TaskContext {
     // telemetry_queue保存最近一帧TelemetrySnapshot。
     QueueHandle_t telemetry_queue{};
 };
+// StartBle()创建共享队列与BleTask并等待BLE启动结果；失败时填充error。
+esp_err_t StartBle(TaskContext &context, ErrorInfo *error=nullptr);
+// StartWifiTelemetry()初始化Wi-Fi并创建WifiTelemetryTask；失败时填充error。
+esp_err_t StartWifiTelemetry(TaskContext &context, ErrorInfo *error=nullptr);
 // CreateBleTask()创建静态BleTask并返回句柄；失败返回nullptr。
 TaskHandle_t CreateBleTask(TaskContext &context);
 void BleTask(void *argument);

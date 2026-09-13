@@ -12,7 +12,8 @@ namespace {
 
 /*
  * 电源模块把GPIO13的ADC2原始采样经过线性校准和分压比例换算为母线电压。
- * Initialize()只建立一次ADC资源，ReadBusVoltage()在启动检查时提供当前读数。
+ * Initialize()只建立一次ADC资源，ReadBusVoltage()提供当前读数，
+ * CheckStartupVoltage()执行启动欠压门限检查。
  */
 
 // Attenuation是VIN_MEA采样通道使用的ADC衰减档。
@@ -109,6 +110,17 @@ esp_err_t ReadBusVoltage(float *voltage_V, ErrorInfo *error)
     *voltage_V =
         static_cast<float>(node_mv) * BatteryVoltageScale / 1000.0f;
     return ESP_OK;
+}
+
+esp_err_t CheckStartupVoltage(ErrorInfo *error)
+{
+    float voltage_V{};
+    esp_err_t result=ReadBusVoltage(&voltage_V,error);
+    if (result == ESP_OK && voltage_V <= StartupUndervoltageThreshold_V) {
+        result=VEHICLE_ERROR(error,ESP_ERR_INVALID_STATE,undervoltage,application,0,
+            voltage_V,StartupUndervoltageThreshold_V,-1,3,-1);
+    }
+    return result;
 }
 
 } // namespace power
