@@ -10,8 +10,9 @@ namespace vehicle {
 namespace diagnostics {
 
 // BootStep按启动顺序标记当前初始化阶段。
+// 保持既有编号不重排：原storage=2已废弃，power=3起的编号维持原值。
 enum class BootStep : std::uint16_t {
-    safe_output=1, storage, power, voltage, nvs, core_dump, ble,
+    safe_output=1, power=3, voltage, nvs, core_dump, ble,
     wifi, imu, motor, outputs_off, timer, complete
 };
 
@@ -20,10 +21,10 @@ struct ControlSnapshot {
     // sampled_us和sequence标识快照的采样时刻和序号。
     std::int64_t sampled_us{};
     std::uint32_t sequence{};
-    // pitch_deg、两轮速度与目标保存本周期观测值。
-    float pitch_deg{}, velocity_M0{}, velocity_M1{}, target_M0{}, target_M1{};
-    // iq_M0、iq_M1和dt_s保存实测电流与周期，单位A、s。
-    float iq_M0{}, iq_M1{}, dt_s{};
+    // pitch_deg、两轮速度（rad/s）与目标电流（A）保存本周期观测值。
+    float pitch_deg{}, velocity_M0_rad_s{}, velocity_M1_rad_s{}, target_M0_A{}, target_M1_A{};
+    // iq_M0_A、iq_M1_A和dt_s保存实测电流与周期，单位A、s。
+    float iq_M0_A{}, iq_M1_A{}, dt_s{};
     // valid标记快照是否来自完成的控制周期。
     bool valid{};
 };

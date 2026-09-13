@@ -11,12 +11,12 @@ namespace current_sensor {
  * Read()返回M0/M1的A/B相电流并按ia+ib+ic=0重建第三相。
  */
 // PhaseCurrents保存一台电机的三相电流，单位A。
-struct PhaseCurrents { float a; float b; float c; };
+struct PhaseCurrents { float phase_a_A; float phase_b_A; float phase_c_A; };
 
 // Sample保存两台电机的相电流、ADC采样时刻和有效标志。
 struct Sample {
-    // phases_a按M0、M1顺序保存两相实测电流，第三相由Read()重建。
-    std::array<PhaseCurrents, 2> phases_a;
+    // phase_currents按M0、M1顺序保存两相实测电流，第三相由Read()重建。
+    std::array<PhaseCurrents, 2> phase_currents;
     // started_us保存本批ADC采样的开始时刻，单位us。
     std::int64_t started_us;
     // valid标记本批数据是否可用于控制。

@@ -86,28 +86,28 @@ esp_err_t Initialize(ErrorInfo *error)
     return ESP_OK;
 }
 
-esp_err_t ReadBusVoltage(float *voltage_v, ErrorInfo *error)
+esp_err_t ReadBusVoltage(float *voltage_V, ErrorInfo *error)
 {
-    if (!initialized || voltage_v == nullptr) {
+    if (!initialized || voltage_V == nullptr) {
         return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, power_map, application, 0);
     }
 
-    // raw是ADC原始码，millivolts是校准后的VIN_MEA节点电压。
-    int raw = 0;
-    esp_err_t result = adc_oneshot_read(adc_handle, adc_channel, &raw);
+    // raw_counts是ADC原始码，node_mv是校准后的VIN_MEA节点电压。
+    int raw_counts = 0;
+    esp_err_t result = adc_oneshot_read(adc_handle, adc_channel, &raw_counts);
     if (result != ESP_OK) {
         return VEHICLE_ERROR(error, result, power_raw, esp, result);
     }
 
-    int millivolts = 0;
-    result = adc_cali_raw_to_voltage(calibration_handle, raw, &millivolts);
+    int node_mv = 0;
+    result = adc_cali_raw_to_voltage(calibration_handle, raw_counts, &node_mv);
     if (result != ESP_OK) {
         return VEHICLE_ERROR(error, result, power_mv, esp, result);
     }
 
     // BatteryVoltageScale恢复分压前的母线电压，最终单位为V。
-    *voltage_v =
-        static_cast<float>(millivolts) * BatteryVoltageScale / 1000.0f;
+    *voltage_V =
+        static_cast<float>(node_mv) * BatteryVoltageScale / 1000.0f;
     return ESP_OK;
 }
 

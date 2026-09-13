@@ -46,9 +46,8 @@ struct MotorState {
     float velocity_rad_s;
     // iq_filtered_A是低通滤波后的Iq反馈，单位A。
     float iq_filtered_A;
-    // uq_filtered_V是输出端Uq滤波值，单位V。
-    // 滤波调用当前被注释。
-    float uq_filtered_V;
+    // uq_applied_V是实际施加的q轴电压，单位V。
+    float uq_applied_V;
     // current_filter_ready标记iq_filtered_A是否已用首帧初始化。
     bool current_filter_ready;
     // pi保存Iq电流PI的跨周期状态。
@@ -120,11 +119,11 @@ float UpdateWheel(encoder::CheckedEncoder &sensor, MotorState &state, float forw
     return state.velocity_rad_s;
 }
 
-MotorSample CalculateCurrent(MotorState &state, const current_sensor::PhaseCurrents &phase,
+MotorSample CalculateCurrent(MotorState &state, const current_sensor::PhaseCurrents &phase_currents,
     float requested_A, float forward_sign, float dt_s, PhaseDuty &duty)
 {
     const float reference_A = std::clamp(requested_A, -CurrentLimit_A, CurrentLimit_A);
-    const float iq_A = ProjectQCurrent(phase.a, phase.b, state.electrical_angle_rad);
+    const float iq_A = ProjectQCurrent(phase_currents.phase_a_A, phase_currents.phase_b_A, state.electrical_angle_rad);
     if (!state.current_filter_ready) { state.iq_filtered_A = iq_A; state.current_filter_ready = true; }
     const float alpha = dt_s / (CurrentFilter_s + dt_s);
     state.iq_filtered_A += alpha * (iq_A - state.iq_filtered_A);
@@ -133,22 +132,21 @@ MotorSample CalculateCurrent(MotorState &state, const current_sensor::PhaseCurre
     // pi保存本周期的Iq PI输出。
     const auto pi = UpdateCurrentPi(state.pi, forward_sign * reference_A - state.iq_filtered_A,
         dt_s, voltage_limit_V);
-    // 暂停PI后Uq低通，直接输出限幅后的PI电压，遥测与实际输出保持一致。
-    // const float output_alpha = dt_s / (CurrentOutputFilter_s + dt_s);
-    // state.uq_filtered_V += output_alpha * (pi.applied_V - state.uq_filtered_V);
-    state.uq_filtered_V = pi.applied_V;
-    if (pi.valid) { duty = CalculateSvpwmDuty(state.uq_filtered_V, state.electrical_angle_rad, PwmBusReference_V); }
+    // Uq输出低通经评估不启用：会给500Hz电流环引入额外相位滞后。
+    // 直接输出限幅后的PI电压，遥测与实际输出保持一致。
+    state.uq_applied_V = pi.applied_V;
+    if (pi.valid) { duty = CalculateSvpwmDuty(state.uq_applied_V, state.electrical_angle_rad, PwmBusReference_V); }
     // 遥测Iq与Uq转换为车辆前进坐标。
     // 相电流保持桥臂到电机坐标。
-    return {reference_A, forward_sign * state.iq_filtered_A, forward_sign * state.uq_filtered_V,
-        phase.a, phase.b, phase.c, pi.saturated, requested_A != reference_A};
+    return {reference_A, forward_sign * state.iq_filtered_A, forward_sign * state.uq_applied_V,
+        phase_currents.phase_a_A, phase_currents.phase_b_A, phase_currents.phase_c_A, pi.saturated, requested_A != reference_A};
 }
 void WritePwm(BLDCDriver3PWM &driver, const PhaseDuty &duty)
 {
     // setPwm接收V，不是占空比。
     // 三相驱动限幅保持母线参考，Uq已在PI处限制。
-    driver.setPwm(duty.a * PwmBusReference_V, duty.b * PwmBusReference_V,
-        duty.c * PwmBusReference_V);
+    driver.setPwm(duty.duty_a * PwmBusReference_V, duty.duty_b * PwmBusReference_V,
+        duty.duty_c * PwmBusReference_V);
 }
 } // namespace
 
@@ -282,9 +280,9 @@ esp_err_t RunCurrentControl(const CurrentCommand &command, CurrentFeedback *out,
     auto next_state_M0=state_M0; auto next_state_M1=state_M1;
     // duty_M0和duty_M1保存本周期三相占空比。
     PhaseDuty duty_M0{}, duty_M1{};
-    const auto sample_M0 = CalculateCurrent(next_state_M0, sample.phases_a[0], command.target_M0_A,
+    const auto sample_M0 = CalculateCurrent(next_state_M0, sample.phase_currents[0], command.target_M0_A,
         ForwardSign_M0, dt_s, duty_M0);
-    const auto sample_M1 = CalculateCurrent(next_state_M1, sample.phases_a[1], command.target_M1_A,
+    const auto sample_M1 = CalculateCurrent(next_state_M1, sample.phase_currents[1], command.target_M1_A,
         ForwardSign_M1, dt_s, duty_M1);
     if (!duty_M0.valid) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, pi_svpwm_M0, application, 0); }
     if (!duty_M1.valid) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, pi_svpwm_M1, application, 0); }
@@ -348,7 +346,7 @@ esp_err_t PauseOutputs(ErrorInfo *error)
     const auto rc = InhibitOutputs(error);
     state_M0.pi = state_M1.pi = {};
     state_M0.iq_filtered_A = state_M1.iq_filtered_A = 0.0f;
-    state_M0.uq_filtered_V = state_M1.uq_filtered_V = 0.0f;
+    state_M0.uq_applied_V = state_M1.uq_applied_V = 0.0f;
     state_M0.current_filter_ready = state_M1.current_filter_ready = false;
     previous_current_us=0; wheel_sample_ready=false;
     return rc;

@@ -30,25 +30,25 @@ PhaseDuty CalculateSvpwmDuty(float uq_V, float electrical_angle_rad, float bus_r
     const float zero_vector_ratio = 1.0f - active_vector_1_ratio - active_vector_2_ratio;
     if (active_vector_1_ratio < -RoundingTolerance || active_vector_2_ratio < -RoundingTolerance ||
         zero_vector_ratio < -RoundingTolerance) { return {}; }
-    // x、y、z复用第十一课六扇区表的查表参数。
-    const float x = active_vector_1_ratio;
-    const float y = active_vector_2_ratio;
-    const float z = zero_vector_ratio * 0.5f;
+    // active_ratio_1、active_ratio_2、zero_half_ratio复用第十一课六扇区表的查表参数。
+    const float active_ratio_1 = active_vector_1_ratio;
+    const float active_ratio_2 = active_vector_2_ratio;
+    const float zero_half_ratio = zero_vector_ratio * 0.5f;
     PhaseDuty duty{};
     // 保留例程的六扇区表。
     // 两个电机共用此纯函数，PWM输出对象相互独立。
     switch (sector) {
-    case 1: duty = {x + y + z, y + z, z, true}; break;
-    case 2: duty = {x + z, x + y + z, z, true}; break;
-    case 3: duty = {z, x + y + z, y + z, true}; break;
-    case 4: duty = {z, x + z, x + y + z, true}; break;
-    case 5: duty = {y + z, z, x + y + z, true}; break;
-    case 6: duty = {x + y + z, z, x + z, true}; break;
+    case 1: duty = {active_ratio_1 + active_ratio_2 + zero_half_ratio, active_ratio_2 + zero_half_ratio, zero_half_ratio, true}; break;
+    case 2: duty = {active_ratio_1 + zero_half_ratio, active_ratio_1 + active_ratio_2 + zero_half_ratio, zero_half_ratio, true}; break;
+    case 3: duty = {zero_half_ratio, active_ratio_1 + active_ratio_2 + zero_half_ratio, active_ratio_2 + zero_half_ratio, true}; break;
+    case 4: duty = {zero_half_ratio, active_ratio_1 + zero_half_ratio, active_ratio_1 + active_ratio_2 + zero_half_ratio, true}; break;
+    case 5: duty = {active_ratio_2 + zero_half_ratio, zero_half_ratio, active_ratio_1 + active_ratio_2 + zero_half_ratio, true}; break;
+    case 6: duty = {active_ratio_1 + active_ratio_2 + zero_half_ratio, zero_half_ratio, active_ratio_1 + zero_half_ratio, true}; break;
     default: return {};
     }
-    duty.a = std::clamp(duty.a, 0.0f, 1.0f);
-    duty.b = std::clamp(duty.b, 0.0f, 1.0f);
-    duty.c = std::clamp(duty.c, 0.0f, 1.0f);
+    duty.duty_a = std::clamp(duty.duty_a, 0.0f, 1.0f);
+    duty.duty_b = std::clamp(duty.duty_b, 0.0f, 1.0f);
+    duty.duty_c = std::clamp(duty.duty_c, 0.0f, 1.0f);
     return duty;
 }
 } // namespace motor

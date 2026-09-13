@@ -64,39 +64,39 @@ float last_pitch_deg = 0.0f;
 std::int64_t previous_sample_us = 0;
 
 // ReadRegister()从BMI160指定寄存器读取一个字节。
-esp_err_t ReadRegister(std::uint8_t address, std::uint8_t *value, ErrorInfo *error)
+esp_err_t ReadRegister(std::uint8_t address, std::uint8_t *register_value, ErrorInfo *error)
 {
-    if (device == nullptr || value == nullptr) {
+    if (device == nullptr || register_value == nullptr) {
         return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, imu_state, application, 0);
     }
-    const esp_err_t rc = i2c_bus_read_byte(device, address, value);
+    const esp_err_t rc = i2c_bus_read_byte(device, address, register_value);
     return rc == ESP_OK ? ESP_OK : VEHICLE_ERROR(error, rc, imu_read, esp, rc, address, 0, -1, 1);
 }
 
 // ReadRegisters()从连续寄存器地址读取一段原始数据。
-esp_err_t ReadRegisters(std::uint8_t address, std::uint8_t *data, std::size_t length, ErrorInfo *error)
+esp_err_t ReadRegisters(std::uint8_t address, std::uint8_t *data_bytes, std::size_t length_bytes, ErrorInfo *error)
 {
-    if (device == nullptr || data == nullptr || length == 0U) {
+    if (device == nullptr || data_bytes == nullptr || length_bytes == 0U) {
         return VEHICLE_ERROR(error, ESP_ERR_INVALID_ARG, imu_state, application, 0);
     }
-    const esp_err_t rc = i2c_bus_read_bytes(device, address, length, data);
+    const esp_err_t rc = i2c_bus_read_bytes(device, address, length_bytes, data_bytes);
     return rc == ESP_OK ? ESP_OK : VEHICLE_ERROR(error, rc, imu_read, esp, rc, address, 0, -1, 1);
 }
 
 // WriteRegister()向BMI160指定寄存器写入一个字节。
-esp_err_t WriteRegister(std::uint8_t address, std::uint8_t value, ErrorInfo *error)
+esp_err_t WriteRegister(std::uint8_t address, std::uint8_t register_value, ErrorInfo *error)
 {
     if (device == nullptr) {
         return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, imu_state, application, 0);
     }
-    const esp_err_t rc = i2c_bus_write_byte(device, address, value);
+    const esp_err_t rc = i2c_bus_write_byte(device, address, register_value);
     if (rc == ESP_OK) { return ESP_OK; }
     ErrorPoint point=ErrorPoint::imu_write;
     switch (address) {
     case RegCmd:
-        point=value == CmdSoftReset ? ErrorPoint::imu_soft_reset :
-              value == CmdAccelNormal ? ErrorPoint::imu_accel_normal :
-              value == CmdGyroNormal ? ErrorPoint::imu_gyro_normal : ErrorPoint::imu_foc_start;
+        point=register_value == CmdSoftReset ? ErrorPoint::imu_soft_reset :
+              register_value == CmdAccelNormal ? ErrorPoint::imu_accel_normal :
+              register_value == CmdGyroNormal ? ErrorPoint::imu_gyro_normal : ErrorPoint::imu_foc_start;
         break;
     case RegAccelRange: point=ErrorPoint::imu_accel_range; break;
     case RegAccelConf: point=ErrorPoint::imu_accel_conf; break;
@@ -106,29 +106,29 @@ esp_err_t WriteRegister(std::uint8_t address, std::uint8_t value, ErrorInfo *err
     case RegOffset6: point=ErrorPoint::imu_foc_offset; break;
     default: break;
     }
-    return ErrorAt(error,rc,point,ErrorDomain::esp,rc,__FILE__,__func__,__LINE__,value,0,address,5);
+    return ErrorAt(error,rc,point,ErrorDomain::esp,rc,__FILE__,__func__,__LINE__,register_value,0,address,5);
 }
 
 // SignedWord()按BMI160低字节在前的格式把两个字节还原为有符号计数。
 std::int16_t SignedWord(const std::uint8_t *bytes)
 {
-    const std::uint16_t value =
+    const std::uint16_t raw_word =
         static_cast<std::uint16_t>(bytes[0]) |
         (static_cast<std::uint16_t>(bytes[1]) << 8U);
-    return static_cast<std::int16_t>(value);
+    return static_cast<std::int16_t>(raw_word);
 }
 
 // WaitForPmuNormal(ErrorInfo *error)等待加速度计和陀螺仪都进入正常工作状态。
 esp_err_t WaitForPmuNormal(ErrorInfo *error)
 {
-    const std::int64_t deadline = esp_timer_get_time() + 250000LL;
-    while (esp_timer_get_time() < deadline) {
-        std::uint8_t status = 0U;
-        const esp_err_t result = ReadRegister(RegPmuStatus, &status, error);
+    const std::int64_t deadline_us = esp_timer_get_time() + 250000LL;
+    while (esp_timer_get_time() < deadline_us) {
+        std::uint8_t pmu_status = 0U;
+        const esp_err_t result = ReadRegister(RegPmuStatus, &pmu_status, error);
         if (result != ESP_OK) {
             return result;
         }
-        if ((status & PmuNormalMask) == PmuBothNormal) {
+        if ((pmu_status & PmuNormalMask) == PmuBothNormal) {
             return ESP_OK;
         }
         vTaskDelay(pdMS_TO_TICKS(1U));
@@ -139,13 +139,13 @@ esp_err_t WaitForPmuNormal(ErrorInfo *error)
 // CalibrateGyroOffset(ErrorInfo *error)启动BMI160陀螺仪FOC并保存硬件偏置使能位。
 esp_err_t CalibrateGyroOffset(ErrorInfo *error)
 {
-    std::uint8_t value = 0U;
-    esp_err_t result = ReadRegister(RegFocConf, &value, error);
+    std::uint8_t register_value = 0U;
+    esp_err_t result = ReadRegister(RegFocConf, &register_value, error);
     if (result != ESP_OK) {
         return result;
     }
 
-    result = WriteRegister(RegFocConf, static_cast<std::uint8_t>(value | FocGyroEnable), error);
+    result = WriteRegister(RegFocConf, static_cast<std::uint8_t>(register_value | FocGyroEnable), error);
     if (result != ESP_OK) {
         return result;
     }
@@ -155,30 +155,30 @@ esp_err_t CalibrateGyroOffset(ErrorInfo *error)
         return result;
     }
 
-    const std::int64_t deadline = esp_timer_get_time() +
+    const std::int64_t deadline_us = esp_timer_get_time() +
         static_cast<std::int64_t>(FocTimeout_ms) * 1000LL;
-    while (esp_timer_get_time() < deadline) {
-        result = ReadRegister(RegStatus, &value, error);
+    while (esp_timer_get_time() < deadline_us) {
+        result = ReadRegister(RegStatus, &register_value, error);
         if (result != ESP_OK) {
             return result;
         }
-        if ((value & FocReady) != 0U) {
+        if ((register_value & FocReady) != 0U) {
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(1U));
     }
 
-    if ((value & FocReady) == 0U) {
+    if ((register_value & FocReady) == 0U) {
         return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, imu_foc_timeout, application, 0);
     }
 
-    result = ReadRegister(RegOffset6, &value, error);
+    result = ReadRegister(RegOffset6, &register_value, error);
     if (result != ESP_OK) {
         return result;
     }
     return WriteRegister(
         RegOffset6,
-        static_cast<std::uint8_t>(value | GyroOffsetEnable), error);
+        static_cast<std::uint8_t>(register_value | GyroOffsetEnable), error);
 }
 
 } // namespace
@@ -208,10 +208,10 @@ esp_err_t Initialize(ErrorInfo *error)
         return VEHICLE_ERROR(error, ESP_FAIL, imu_device, application, 0);
     }
 
-    std::uint8_t value = 0U;
-    esp_err_t result = ReadRegister(RegChipId, &value, error);
-    if (result != ESP_OK || value != ChipId) {
-        return result != ESP_OK ? result : VEHICLE_ERROR(error, ESP_ERR_NOT_FOUND, imu_id, application, 0, value, ChipId, -1, 3);
+    std::uint8_t register_value = 0U;
+    esp_err_t result = ReadRegister(RegChipId, &register_value, error);
+    if (result != ESP_OK || register_value != ChipId) {
+        return result != ESP_OK ? result : VEHICLE_ERROR(error, ESP_ERR_NOT_FOUND, imu_id, application, 0, register_value, ChipId, -1, 3);
     }
 
     result = WriteRegister(RegCmd, CmdSoftReset, error);
@@ -244,12 +244,12 @@ esp_err_t Initialize(ErrorInfo *error)
     if (result != ESP_OK) {
         return result;
     }
-    result = ReadRegister(RegAccelConf, &value, error);
+    result = ReadRegister(RegAccelConf, &register_value, error);
     if (result != ESP_OK) {
         return result;
     }
-    value = static_cast<std::uint8_t>((value & ~OdrMask) | Odr800Hz);
-    result = WriteRegister(RegAccelConf, value, error);
+    register_value = static_cast<std::uint8_t>((register_value & ~OdrMask) | Odr800Hz);
+    result = WriteRegister(RegAccelConf, register_value, error);
     if (result != ESP_OK) {
         return result;
     }
@@ -257,12 +257,12 @@ esp_err_t Initialize(ErrorInfo *error)
     if (result != ESP_OK) {
         return result;
     }
-    result = ReadRegister(RegGyroConf, &value, error);
+    result = ReadRegister(RegGyroConf, &register_value, error);
     if (result != ESP_OK) {
         return result;
     }
-    value = static_cast<std::uint8_t>((value & ~OdrMask) | Odr800Hz);
-    result = WriteRegister(RegGyroConf, value, error);
+    register_value = static_cast<std::uint8_t>((register_value & ~OdrMask) | Odr800Hz);
+    result = WriteRegister(RegGyroConf, register_value, error);
     if (result != ESP_OK) {
         return result;
     }
@@ -291,22 +291,22 @@ esp_err_t ReadAttitude(AttitudeSample *out, ErrorInfo *error)
     if (!out || !initialized) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, imu_state, application, 0); }
     *out = {};
 
-    // raw按陀螺仪Y轴、加速度计X/Y/Z轴的连续寄存器布局保存一帧数据。
-    std::uint8_t raw[12]{};
-    const esp_err_t result = ReadRegisters(RegGyroData, raw, sizeof(raw), error);
+    // raw_bytes按陀螺仪Y轴、加速度计X/Y/Z轴的连续寄存器布局保存一帧数据。
+    std::uint8_t raw_bytes[12]{};
+    const esp_err_t result = ReadRegisters(RegGyroData, raw_bytes, sizeof(raw_bytes), error);
     if (result != ESP_OK) {
         return result;
     }
 
     // 传感器原始计数按配置量程换算为g和deg/s。
     const float acceleration_x_g =
-        static_cast<float>(SignedWord(raw + 6U)) / AccelerationScale;
+        static_cast<float>(SignedWord(raw_bytes + 6U)) / AccelerationScale;
     const float acceleration_y_g =
-        static_cast<float>(SignedWord(raw + 8U)) / AccelerationScale;
+        static_cast<float>(SignedWord(raw_bytes + 8U)) / AccelerationScale;
     const float acceleration_z_g =
-        static_cast<float>(SignedWord(raw + 10U)) / AccelerationScale;
+        static_cast<float>(SignedWord(raw_bytes + 10U)) / AccelerationScale;
     const float gyro_y_deg_s =
-        static_cast<float>(SignedWord(raw + 2U)) / GyroScale;
+        static_cast<float>(SignedWord(raw_bytes + 2U)) / GyroScale;
 
     // 加速度计俯仰角使用X轴与重力方向的反正切，并保持车辆坐标符号。
     const float accelerometer_pitch_deg =

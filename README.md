@@ -214,7 +214,7 @@ Current protocol channels include:
 ```text
 .002    Control command
 .007    Binary telemetry
-.008    Diagnostic / ErrorInfo
+diagnostic    Diagnostic / ErrorInfo
 ```
 
 ### Wi-Fi TCP

@@ -5,10 +5,10 @@ namespace motor {
 
 // PhaseDuty保存三相占空比和有效性，占空比范围0~1。
 struct PhaseDuty {
-    // a、b、c是三相占空比。
-    float a;
-    float b;
-    float c;
+    // duty_a、duty_b、duty_c是三相占空比。
+    float duty_a;
+    float duty_b;
+    float duty_c;
     // valid为false时调用者必须关闭输出。
     bool valid;
 };

@@ -34,17 +34,17 @@ std::array<float, 4> offsets_mv{};
 // sample_started_us记录本批读取的开始时刻，单位us。
 std::int64_t sample_started_us = 0;
 // ReadMillivolts()按current_pins顺序读取四路电压并检查范围。
-esp_err_t ReadMillivolts(std::array<int, 4> &values, ErrorInfo *error)
+esp_err_t ReadMillivolts(std::array<int, 4> &values_mv, ErrorInfo *error)
 {
     sample_started_us = esp_timer_get_time();
-    for (unsigned i = 0; i < values.size(); ++i) {
-        int raw = 0;
-        esp_err_t result = adc_oneshot_read(adc, channels[i], &raw);
-        if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_raw, esp, result, raw, 0, i, 5); }
-        result = adc_cali_raw_to_voltage(calibration, raw, &values[i]);
-        if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_mv, esp, result, raw, 0, i, 5); }
-        if (values[i] < AdcMin_mV || values[i] > AdcMax_mV) {
-            return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, current_range, application, 0, values[i], values[i] < AdcMin_mV ? AdcMin_mV : AdcMax_mV, i, 7);
+    for (unsigned i = 0; i < values_mv.size(); ++i) {
+        int raw_counts = 0;
+        esp_err_t result = adc_oneshot_read(adc, channels[i], &raw_counts);
+        if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_raw, esp, result, raw_counts, 0, i, 5); }
+        result = adc_cali_raw_to_voltage(calibration, raw_counts, &values_mv[i]);
+        if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_mv, esp, result, raw_counts, 0, i, 5); }
+        if (values_mv[i] < AdcMin_mV || values_mv[i] > AdcMax_mV) {
+            return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, current_range, application, 0, values_mv[i], values_mv[i] < AdcMin_mV ? AdcMin_mV : AdcMax_mV, i, 7);
         }
     }
     return esp_timer_get_time() - sample_started_us <= ReadMaxDuration_us
@@ -86,19 +86,19 @@ esp_err_t Initialize(ErrorInfo *error)
     cal.default_vref = AdcDefaultVref_mV;
     result = adc_cali_create_scheme_line_fitting(&cal, &calibration);
     if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_calibration, esp, result); }
-    // low和high记录校准期间逐路电压极值，用于检查峰峰噪声。
-    std::array<int, 4> low{};
-    std::array<int, 4> high{};
-    low.fill(AdcMax_mV);
+    // min_mv和max_mv记录校准期间逐路电压极值，用于检查峰峰噪声。
+    std::array<int, 4> min_mv{};
+    std::array<int, 4> max_mv{};
+    min_mv.fill(AdcMax_mV);
     offsets_mv.fill(0.0f);
-    for (unsigned sample = 0; sample < OffsetSamples; ++sample) {
-        std::array<int, 4> mv{};
-        result = ReadMillivolts(mv, error);
+    for (unsigned sample_index = 0; sample_index < OffsetSamples; ++sample_index) {
+        std::array<int, 4> batch_mv{};
+        result = ReadMillivolts(batch_mv, error);
         if (result != ESP_OK) { return result; }
-        for (unsigned i = 0; i < mv.size(); ++i) {
-            offsets_mv[i] += mv[i];
-            low[i] = std::min(low[i], mv[i]);
-            high[i] = std::max(high[i], mv[i]);
+        for (unsigned i = 0; i < batch_mv.size(); ++i) {
+            offsets_mv[i] += batch_mv[i];
+            min_mv[i] = std::min(min_mv[i], batch_mv[i]);
+            max_mv[i] = std::max(max_mv[i], batch_mv[i]);
         }
         // 仅启动零偏校准使用延时，此时驱动器保持关闭。
         vTaskDelay(1);
@@ -112,7 +112,7 @@ esp_err_t Initialize(ErrorInfo *error)
         }
     }
     for (unsigned i=0; i<offsets_mv.size(); ++i) {
-        if (high[i]-low[i] > OffsetNoise_mV) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, offset_noise, application, 0, high[i]-low[i], OffsetNoise_mV, i, 7, 1); }
+        if (max_mv[i]-min_mv[i] > OffsetNoise_mV) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, offset_noise, application, 0, max_mv[i]-min_mv[i], OffsetNoise_mV, i, 7, 1); }
     }
     ready=true;
     return ESP_OK;
@@ -120,28 +120,28 @@ esp_err_t Initialize(ErrorInfo *error)
 
 esp_err_t Read(Sample *out, ErrorInfo *error)
 {
-    std::array<int, 4> mv{};
+    std::array<int, 4> phase_mv{};
     if (!out) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_ARG, current_raw, application, 0); }
     *out = {};
     if (!ready) { return VEHICLE_ERROR(error,ESP_ERR_INVALID_STATE,current_state,application,0); }
-    const esp_err_t rc = ReadMillivolts(mv, error);
+    const esp_err_t rc = ReadMillivolts(phase_mv, error);
     if (rc != ESP_OK) { return rc; }
-    // amps把四路mV减去零偏后换算为相电流，单位A。
-    std::array<float, 4> amps{};
-    std::array<PhaseCurrents,2> phase_samples{};
-    for (unsigned i = 0; i < amps.size(); ++i) {
-        amps[i] = (mv[i] - offsets_mv[i]) * 0.001f * Polarity /
+    // currents_A把四路mV减去零偏后换算为相电流，单位A。
+    std::array<float, 4> currents_A{};
+    std::array<PhaseCurrents,2> phase_currents{};
+    for (unsigned i = 0; i < currents_A.size(); ++i) {
+        currents_A[i] = (phase_mv[i] - offsets_mv[i]) * 0.001f * Polarity /
             (Shunt_Ohm * AmplifierGain);
-        if (!std::isfinite(amps[i]) || std::abs(amps[i]) > PhaseTrip_A) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, phase_limit, application, 0, amps[i], PhaseTrip_A, i, 7, 1); }
+        if (!std::isfinite(currents_A[i]) || std::abs(currents_A[i]) > PhaseTrip_A) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, phase_limit, application, 0, currents_A[i], PhaseTrip_A, i, 7, 1); }
     }
-    for (unsigned i = 0; i < phase_samples.size(); ++i) {
-        const float a = amps[2 * i];
-        const float b = amps[2 * i + 1];
-        if (std::abs(a + b) > PhaseTrip_A) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, reconstructed_limit, application, 0, -a-b, PhaseTrip_A, i, 7, 1); }
+    for (unsigned i = 0; i < phase_currents.size(); ++i) {
+        const float measured_a_A = currents_A[2 * i];
+        const float measured_b_A = currents_A[2 * i + 1];
+        if (std::abs(measured_a_A + measured_b_A) > PhaseTrip_A) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, reconstructed_limit, application, 0, -measured_a_A-measured_b_A, PhaseTrip_A, i, 7, 1); }
         // 两相测量重构第三相，仅用于保护，不建立Id环。
-        phase_samples[i] = {a, b, -a - b};
+        phase_currents[i] = {measured_a_A, measured_b_A, -measured_a_A - measured_b_A};
     }
-    *out = {phase_samples, sample_started_us, true};
+    *out = {phase_currents, sample_started_us, true};
     return ESP_OK;
 }
 

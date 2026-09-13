@@ -214,7 +214,7 @@ docs/平衡车控制界面.html
 ```text
 .002    控制指令
 .007    二进制遥测
-.008    诊断 / ErrorInfo
+diagnostic    诊断 / ErrorInfo
 ```
 
 ### Wi-Fi TCP

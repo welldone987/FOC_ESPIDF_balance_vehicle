@@ -13,7 +13,7 @@ namespace power {
 esp_err_t Initialize(ErrorInfo *error=nullptr);
 
 // ReadBusVoltage()返回经过7.5k/1k分压比例恢复后的母线电压，单位V。
-esp_err_t ReadBusVoltage(float *voltage_v, ErrorInfo *error=nullptr);
+esp_err_t ReadBusVoltage(float *voltage_V, ErrorInfo *error=nullptr);
 
 
 } // namespace power

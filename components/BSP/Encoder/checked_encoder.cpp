@@ -43,15 +43,15 @@ bool CheckedEncoder::Refresh()
     if (!healthy_) {
         return false;
     }
-    // raw按大端保存AS5600的12位原始角度寄存器内容。
-    std::uint8_t raw[2]{};
+    // raw_bytes按大端保存AS5600的12位原始角度寄存器内容。
+    std::uint8_t raw_bytes[2]{};
     raw_error_ = i2c_bus_read_bytes(
-        device_, As5600RawAngleRegister, sizeof(raw), raw);
+        device_, As5600RawAngleRegister, sizeof(raw_bytes), raw_bytes);
     healthy_ = healthy_ && raw_error_ == ESP_OK;
     if (healthy_) {
-        // count屏蔽到低12位，一个圆周对应4096个计数。
-        const unsigned count = ((raw[0] << 8) | raw[1]) & 0x0fff;
-        angle_rad_ = (count * 360.0f / 4096.0f) * (3.14159265358979f / 180.0f);
+        // counts屏蔽到低12位，一个圆周对应4096个计数。
+        const unsigned counts = ((raw_bytes[0] << 8) | raw_bytes[1]) & 0x0fff;
+        angle_rad_ = (counts * 360.0f / 4096.0f) * (3.14159265358979f / 180.0f);
     }
     return healthy_;
 }

@@ -32,11 +32,6 @@ inline constexpr float IqKp_V_per_A = 5.0f;
 inline constexpr float IqKi_V_per_A_s = 200.0f;
 // CurrentFilter_s是电流PI输入端Iq一阶低通滤波时间常数，单位s。
 inline constexpr float CurrentFilter_s = 0.0005f;
-// CurrentOutputFilter_s是电流PI输出端Uq一阶低通滤波时间常数，单位s。
-// 调用处已注释，当前不生效。
-// Lesson10源码写0.05s但注释为5ms。
-// 这里采用注释意图，避免给500Hz电流环引入50ms延迟。
-inline constexpr float CurrentOutputFilter_s = 0.005f;
 // 旧版6V的80%。
 // 电流目标仍独立限制为每轮±1A。
 inline constexpr float UqLimit_V = 4.8f;
@@ -49,7 +44,6 @@ static_assert(CurrentOutputMaxAge_us >= ::vehicle::current_sensor::ReadMaxDurati
 static_assert(UqLimit_V > 0.0f && PwmBusReference_V > 0.0f);
 static_assert(SvpwmLinearMargin > 0.0f && SvpwmLinearMargin <= 1.0f);
 static_assert(CurrentFilter_s >= 0.0f);
-static_assert(CurrentOutputFilter_s > 0.0f);
 static_assert(ForwardSign_M0 == 1.0f || ForwardSign_M0 == -1.0f);
 static_assert(ForwardSign_M1 == 1.0f || ForwardSign_M1 == -1.0f);
 

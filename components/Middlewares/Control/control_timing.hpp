@@ -30,9 +30,9 @@ struct ControlTiming {
 
 // SampleInterval()为首轮返回显式初始周期，后续返回相邻采样时刻差。
 constexpr std::int64_t SampleInterval(
-    std::int64_t now, std::int64_t previous, std::int64_t initial)
+    std::int64_t now_us, std::int64_t previous_us, std::int64_t initial_us)
 {
-    return previous == 0 ? initial : now - previous;
+    return previous_us == 0 ? initial_us : now_us - previous_us;
 }
 
 } // namespace control

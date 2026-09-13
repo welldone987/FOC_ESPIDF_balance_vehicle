@@ -110,8 +110,8 @@ void PrintControlFault(const ErrorInfo &error)
     PrintTiming(timing);
     ESP_LOGI("control_diag","CONTROL_LAST_VALID valid=%u seq=%lu pitch_deg=%g velocity_M0_rad_s=%g velocity_M1_rad_s=%g target_M0_A=%g target_M1_A=%g",
         previous.valid,static_cast<unsigned long>(previous.sequence),static_cast<double>(previous.pitch_deg),
-        static_cast<double>(previous.velocity_M0),static_cast<double>(previous.velocity_M1),
-        static_cast<double>(previous.target_M0),static_cast<double>(previous.target_M1));
+        static_cast<double>(previous.velocity_M0_rad_s),static_cast<double>(previous.velocity_M1_rad_s),
+        static_cast<double>(previous.target_M0_A),static_cast<double>(previous.target_M1_A));
     ESP_LOGE("control_diag","CONTROL_SUMMARY FAIL; stop latched, restart required; BLE diagnostic history retained");
 }
 

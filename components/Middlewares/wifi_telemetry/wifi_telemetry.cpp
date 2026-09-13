@@ -42,10 +42,10 @@ constexpr char Tag[] = "wifi_telemetry";
 // Header是TCP v2协议头和21列字段名。
 constexpr char Header[] =
     "#balancing_vehicle_tcp,v2\n"
-    "#time_s,pitch_deg,left_velocity_rad_s,right_velocity_rad_s,"
-    "velocity_difference_rad_s,left_target_a,right_target_a,"
-    "left_iq_measured_a,right_iq_measured_a,left_uq_applied_v,right_uq_applied_v,"
-    "left_phase_a_a,left_phase_b_a,left_phase_c_a,right_phase_a_a,right_phase_b_a,right_phase_c_a,"
+    "#time_s,pitch_deg,m0_velocity_rad_s,m1_velocity_rad_s,"
+    "velocity_difference_rad_s,m0_target_a,m1_target_a,"
+    "m0_iq_measured_a,m1_iq_measured_a,m0_uq_applied_v,m1_uq_applied_v,"
+    "m0_phase_a_a,m0_phase_b_a,m0_phase_c_a,m1_phase_a_a,m1_phase_b_a,m1_phase_c_a,"
     "current_dt_s,current_sample_age_us,current_saturated,current_valid\n";
 
 StaticEventGroup_t wifi_events_storage{};
@@ -197,7 +197,7 @@ esp_err_t Initialize()
     return result;
 }
 
-void Service(const TelemetrySnapshot *snapshot)
+void Service(const control::TelemetrySnapshot *snapshot)
 {
     // Service()在非阻塞模式下推进完整的Wi-Fi和TCP状态机。
     const std::uint32_t now_ms = NowMilliseconds();
@@ -311,20 +311,20 @@ void Service(const TelemetrySnapshot *snapshot)
         return;
     }
 
-    // 遥测速度沿用控制器的左右方向约定，velocity_difference为左减右。
-    const float velocity_M0 = snapshot->velocity_M0_rad_s;
-    const float velocity_M1 = snapshot->velocity_M1_rad_s;
+    // 遥测速度沿用控制器的M0/M1方向约定，velocity_difference为M0减M1。
+    const float velocity_M0_rad_s = snapshot->velocity_M0_rad_s;
+    const float velocity_M1_rad_s = snapshot->velocity_M1_rad_s;
     // device_time_us拆成秒和微秒字段，保持LF分隔的文本协议格式。
-    const int length = std::snprintf(
+    const int length_bytes = std::snprintf(
         pending.data(),
         pending.size(),
         "%lld.%06lld,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%lld,%u,%u\n",
         static_cast<long long>(snapshot->device_time_us / 1000000LL),
         static_cast<long long>(snapshot->device_time_us % 1000000LL),
         static_cast<double>(snapshot->pitch_deg),
-        static_cast<double>(velocity_M0),
-        static_cast<double>(velocity_M1),
-        static_cast<double>(velocity_M0 - velocity_M1),
+        static_cast<double>(velocity_M0_rad_s),
+        static_cast<double>(velocity_M1_rad_s),
+        static_cast<double>(velocity_M0_rad_s - velocity_M1_rad_s),
         static_cast<double>(snapshot->target_M0_A),
         static_cast<double>(snapshot->target_M1_A),
         static_cast<double>(snapshot->iq_measured_M0_A), static_cast<double>(snapshot->iq_measured_M1_A),
@@ -335,8 +335,8 @@ void Service(const TelemetrySnapshot *snapshot)
         static_cast<double>(snapshot->current_dt_s), static_cast<long long>(snapshot->current_sample_age_us),
         static_cast<unsigned>(snapshot->current_saturated), static_cast<unsigned>(snapshot->current_valid));
     // 只有整行适合缓冲区时才提交为下一次非阻塞发送帧。
-    if (length > 0 && static_cast<std::size_t>(length) < pending.size()) {
-        pending_length = static_cast<std::size_t>(length);
+    if (length_bytes > 0 && static_cast<std::size_t>(length_bytes) < pending.size()) {
+        pending_length = static_cast<std::size_t>(length_bytes);
         last_sequence = snapshot->sequence;
     }
 }

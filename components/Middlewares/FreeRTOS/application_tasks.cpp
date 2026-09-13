@@ -5,6 +5,7 @@
 #include "control_config.hpp"
 #include "control_timing.hpp"
 #include "motion_command.hpp"
+#include "telemetry_snapshot.hpp"
 #include "bmi160_attitude.hpp"
 #include "diagnostics.hpp"
 #include "encoder_config.hpp"
@@ -92,7 +93,7 @@ void BleTask(void *argument)
 void ControlTask(void *argument)
 {
     // context由app_main提供，在整个静态任务生命周期内保持有效。
-    [[maybe_unused]] auto &context = *static_cast<TaskContext *>(argument);
+    auto &context = *static_cast<TaskContext *>(argument);
     // controller保存轨迹、外环积分和电流分配的跨周期状态。
     control::ControllerState controller{};
     control::Initialize(controller);
@@ -103,6 +104,8 @@ void ControlTask(void *argument)
     esp_err_t result=imu::Initialize(&error);
     BootResult(diagnostics::BootStep::imu,result,error);
     diagnostics::Boot(diagnostics::BootStep::motor,"BEGIN");
+    // BSP不依赖Middlewares，电机子步骤以ErrorPoint编号（0x3xx）上报；
+    // 该值会写入boot_step并出现在启动日志，离线解码按ErrorPoint解读。
     result=motor::Initialize(&error,[](std::uint16_t step,const char *state) {
         diagnostics::Boot(static_cast<diagnostics::BootStep>(step),state);
     });
@@ -263,7 +266,7 @@ void ControlTask(void *argument)
             wheels.velocity_M0_rad_s,wheels.velocity_M1_rad_s,output.target_M0_A,output.target_M1_A,
             current.sample_M0.iq_measured_A,current.sample_M1.iq_measured_A,cycle_dt_s,true});
         // snapshot发布到遥测队列，供BLE .007和可选Wi-Fi消费。
-        const wifi_telemetry::TelemetrySnapshot snapshot{
+        const control::TelemetrySnapshot snapshot{
             cycle_time_us, sequence, attitude.pitch_deg,
             wheels.velocity_M0_rad_s, wheels.velocity_M1_rad_s,
             current.sample_M0.iq_reference_A, current.sample_M1.iq_reference_A,
@@ -290,8 +293,8 @@ void WifiTelemetryTask(void *argument)
     for (;;) {
         vTaskDelayUntil(&release, pdMS_TO_TICKS(wifi_telemetry::ServicePeriod_ms));
         // xQueuePeek()复制最新快照但不移除队列中的值。
-        wifi_telemetry::TelemetrySnapshot snapshot{};
-        const wifi_telemetry::TelemetrySnapshot *latest = nullptr;
+        control::TelemetrySnapshot snapshot{};
+        const control::TelemetrySnapshot *latest = nullptr;
         if (xQueuePeek(context.telemetry_queue, &snapshot, 0U) == pdPASS) {
             latest = &snapshot;
         }

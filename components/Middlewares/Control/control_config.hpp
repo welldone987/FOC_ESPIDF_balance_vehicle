@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "motor_config.hpp"
+
 namespace vehicle {
 namespace control {
 
@@ -10,7 +12,8 @@ inline constexpr unsigned AttitudePeriod_us = 5000U;
 // OuterPeriod_s是速度与偏航PI的更新周期，单位s。
 inline constexpr float OuterPeriod_s = 0.010f;
 // MaximumControlGap_s限制相邻控制周期的最大间隔，单位s。
-inline constexpr float MaximumControlGap_s = 0.010f;
+// 与BSP电机入口共用同一常量，避免两处闸值漂移。
+inline constexpr float MaximumControlGap_s = motor::MaximumControlGap_s;
 // RadToDeg和DegToRad是弧度与角度换算系数。
 inline constexpr float RadToDeg = 57.295779513f;
 inline constexpr float DegToRad = 1.0f / RadToDeg;

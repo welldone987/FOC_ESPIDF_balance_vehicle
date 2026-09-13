@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <cstring>
 #include "ble_config.hpp"
-#include "wifi_telemetry.hpp"
+#include "telemetry_snapshot.hpp"
 
 namespace vehicle::ble {
 /*
@@ -22,25 +22,25 @@ inline std::uint32_t FloatBits(float value)
     return bits;
 }
 // PutU32()把小端uint32写入报文指定偏移。
-inline void PutU32(TelemetryPacket &packet, unsigned offset, std::uint32_t value)
+inline void PutU32(TelemetryPacket &packet, unsigned offset_bytes, std::uint32_t value)
 {
-    for (unsigned i=0; i<4; ++i) { packet[offset+i]=static_cast<std::uint8_t>(value>>(8*i)); }
+    for (unsigned i=0; i<4; ++i) { packet[offset_bytes+i]=static_cast<std::uint8_t>(value>>(8*i)); }
 }
 // EncodeTelemetry()编码一帧遥测。
 // 无快照或数据无效时返回版本1和全零。
-inline TelemetryPacket EncodeTelemetry(const wifi_telemetry::TelemetrySnapshot *sample,
+inline TelemetryPacket EncodeTelemetry(const control::TelemetrySnapshot *sample,
                                        std::int64_t now_us)
 {
     TelemetryPacket packet{};
     // packet[0]是协议版本号。
     packet[0]=1;
     if (!sample) { return packet; }
-    const auto pitch=FloatBits(sample->pitch_deg);
-    const auto velocity_M0=FloatBits(sample->velocity_M0_rad_s);
-    const auto velocity_M1=FloatBits(sample->velocity_M1_rad_s);
+    const auto pitch_bits=FloatBits(sample->pitch_deg);
+    const auto velocity_M0_bits=FloatBits(sample->velocity_M0_rad_s);
+    const auto velocity_M1_bits=FloatBits(sample->velocity_M1_rad_s);
     // 使用位检查，避免-ffast-math消除NaN/Inf检查。
-    const bool finite=(pitch & 0x7f800000U)!=0x7f800000U &&
-        (velocity_M0 & 0x7f800000U)!=0x7f800000U && (velocity_M1 & 0x7f800000U)!=0x7f800000U;
+    const bool finite=(pitch_bits & 0x7f800000U)!=0x7f800000U &&
+        (velocity_M0_bits & 0x7f800000U)!=0x7f800000U && (velocity_M1_bits & 0x7f800000U)!=0x7f800000U;
     const bool fresh=now_us>=sample->device_time_us &&
         now_us-sample->device_time_us<TelemetryMaxAge_us;
     // packet[1]的bit0标记本帧数据是否有效。
@@ -50,7 +50,7 @@ inline TelemetryPacket EncodeTelemetry(const wifi_telemetry::TelemetrySnapshot *
     packet[3]=static_cast<std::uint8_t>(sample->sequence>>8);
     // packet[4..7]是采样时刻的毫秒低32位。
     PutU32(packet,4,static_cast<std::uint32_t>(sample->device_time_us/1000));
-    if (finite) { PutU32(packet,8,pitch); PutU32(packet,12,velocity_M0); PutU32(packet,16,velocity_M1); }
+    if (finite) { PutU32(packet,8,pitch_bits); PutU32(packet,12,velocity_M0_bits); PutU32(packet,16,velocity_M1_bits); }
     return packet;
 }
 } // namespace vehicle::ble

@@ -50,6 +50,7 @@ struct CurrentFeedback {
 };
 // 硬件确认门通过后才进行有运动的对齐。
 // 对齐完成后公共使能关闭。
+// step使用ErrorPoint编号，使BSP无需依赖Middlewares的诊断类型。
 using BootReporter = void (*)(std::uint16_t step, const char *state);
 esp_err_t Initialize(ErrorInfo *error=nullptr, BootReporter report=nullptr);
 esp_err_t ReadWheelState(WheelState *out, ErrorInfo *error=nullptr);

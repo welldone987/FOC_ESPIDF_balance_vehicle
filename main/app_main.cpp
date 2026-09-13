@@ -5,6 +5,7 @@
 #include "power_config.hpp"
 #include "power_monitor.hpp"
 #include "wifi_telemetry.hpp"
+#include "telemetry_snapshot.hpp"
 #include "ble_config.hpp"
 #include "esp_core_dump.h"
 #include "esp_log.h"
@@ -31,7 +32,7 @@ StackType_t control_stack[vehicle::freertos_tasks::ControlStackBytes]{};
 vehicle::freertos_tasks::TaskContext context{};
 // queue_storage和queue_buffer是遥测快照的长度1静态队列。
 StaticQueue_t queue_storage{};
-std::uint8_t queue_buffer[sizeof(vehicle::wifi_telemetry::TelemetrySnapshot)]{};
+std::uint8_t queue_buffer[sizeof(vehicle::control::TelemetrySnapshot)]{};
 #if CONFIG_VEHICLE_WIFI_ENABLED
 // wifi_storage和wifi_stack是可选Wi-Fi服务任务的静态TCB与栈。
 StaticTask_t wifi_storage{};
@@ -62,16 +63,14 @@ extern "C" void app_main(void)
     vehicle::diagnostics::Initialize();
     vehicle::diagnostics::Boot(BootStep::safe_output,"BEGIN");
     if (!Finish(BootStep::safe_output,rc,error)) { return; }
-    vehicle::diagnostics::Boot(BootStep::storage,"BEGIN");
-    vehicle::diagnostics::Boot(BootStep::storage,"OK");
     vehicle::diagnostics::Boot(BootStep::power,"BEGIN");
     if (!Finish(BootStep::power,vehicle::power::Initialize(&error),error)) { return; }
     vehicle::diagnostics::Boot(BootStep::voltage,"BEGIN");
-    float voltage{};
-    rc=vehicle::power::ReadBusVoltage(&voltage,&error);
-    if (rc == ESP_OK && voltage <= vehicle::power::StartupUndervoltageThreshold_V) {
+    float voltage_V{};
+    rc=vehicle::power::ReadBusVoltage(&voltage_V,&error);
+    if (rc == ESP_OK && voltage_V <= vehicle::power::StartupUndervoltageThreshold_V) {
         rc=VEHICLE_ERROR(&error,ESP_ERR_INVALID_STATE,undervoltage,application,0,
-            voltage,vehicle::power::StartupUndervoltageThreshold_V,-1,3,-1);
+            voltage_V,vehicle::power::StartupUndervoltageThreshold_V,-1,3,-1);
     }
     if (!Finish(BootStep::voltage,rc,error)) { return; }
     vehicle::diagnostics::Boot(BootStep::nvs,"BEGIN");
@@ -91,7 +90,7 @@ extern "C" void app_main(void)
     }
     vehicle::diagnostics::Boot(BootStep::ble,"BEGIN");
     context.command_queue=xQueueCreateStatic(1,sizeof(vehicle::control::MotionCommand),command_buffer,&command_storage);
-    context.telemetry_queue=xQueueCreateStatic(1,sizeof(vehicle::wifi_telemetry::TelemetrySnapshot),queue_buffer,&queue_storage);
+    context.telemetry_queue=xQueueCreateStatic(1,sizeof(vehicle::control::TelemetrySnapshot),queue_buffer,&queue_storage);
     context.ble_startup_queue=xQueueCreateStatic(1,sizeof(vehicle::freertos_tasks::BleStartup),ble_startup_buffer,&ble_startup_storage);
     if (!context.command_queue || !context.telemetry_queue || !context.ble_startup_queue ||
         !xTaskCreateStaticPinnedToCore(vehicle::freertos_tasks::BleTask,"BleTask",vehicle::freertos_tasks::BleStackBytes,
@@ -107,6 +106,7 @@ extern "C" void app_main(void)
         startup.result=VEHICLE_ERROR(&startup.error,ESP_ERR_TIMEOUT,ble_ready_timeout,application,0);
     }
     if (!Finish(BootStep::ble,startup.result,startup.error)) { return; }
+
 #if CONFIG_VEHICLE_WIFI_ENABLED
     vehicle::diagnostics::Boot(BootStep::wifi,"BEGIN");
     rc=vehicle::wifi_telemetry::Initialize();
