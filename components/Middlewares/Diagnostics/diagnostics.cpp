@@ -2,12 +2,11 @@
 #include <cstdio>
 #include <cstring>
 
-#include "esp_attr.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-COREDUMP_DRAM_ATTR vehicle::diagnostics::CrashState g_diag_crash{};
+vehicle::diagnostics::CrashState g_diag_crash{};
 
 namespace vehicle {
 namespace diagnostics {

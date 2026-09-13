@@ -7,7 +7,6 @@
 #include "wifi_telemetry.hpp"
 #include "telemetry_snapshot.hpp"
 #include "ble_config.hpp"
-#include "esp_core_dump.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 
@@ -65,17 +64,6 @@ extern "C" void app_main(void)
     rc=nvs_flash_init();
     if (rc != ESP_OK) { VEHICLE_ERROR(&error,rc,nvs,esp,rc); }
     if (!Finish(BootStep::nvs,rc,error)) { return; }
-    vehicle::diagnostics::Boot(BootStep::core_dump,"BEGIN");
-    size_t address{},size{};
-    rc=esp_core_dump_image_get(&address,&size);
-    if (rc == ESP_OK) { rc=esp_core_dump_image_check(); }
-    if (rc == ESP_ERR_NOT_FOUND) {
-        // 无历史dump时跳过检查，不阻塞启动。
-        vehicle::diagnostics::Boot(BootStep::core_dump,"SKIP",rc);
-    } else {
-        if (rc != ESP_OK) { VEHICLE_ERROR(&error,rc,core_dump,esp,rc); }
-        Finish(BootStep::core_dump,rc,error,false);
-    }
     vehicle::diagnostics::Boot(BootStep::ble,"BEGIN");
     context.command_queue=xQueueCreateStatic(1,sizeof(vehicle::control::MotionCommand),command_buffer,&command_storage);
     context.telemetry_queue=xQueueCreateStatic(1,sizeof(vehicle::control::TelemetrySnapshot),queue_buffer,&queue_storage);

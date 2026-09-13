@@ -15,7 +15,7 @@ enum class ErrorDomain : std::uint8_t { application, esp, nimble, simplefoc };
  * 对应原right_*编号，重命名时不能重排。
  */
 enum class ErrorPoint : std::uint16_t {
-    none=0, boot_resource=1, nvs=2, core_dump=3,
+    none=0, boot_resource=1, nvs=2,
     power_map=0x100, power_unit, power_channel, power_calibration, power_raw, power_mv, undervoltage,
     current_unit=0x200, current_map, current_channel, current_calibration, current_raw,
     current_mv, current_range, current_timeout, offset_mean, offset_noise, phase_limit, reconstructed_limit, current_state,

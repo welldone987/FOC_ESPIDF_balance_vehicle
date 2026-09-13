@@ -10,9 +10,9 @@ namespace vehicle {
 namespace diagnostics {
 
 // BootStep按启动顺序标记当前初始化阶段。
-// 保持既有编号不重排：原storage=2已废弃，power=3起的编号维持原值。
+// 保持既有编号不重排：原storage=2与随coredump删除的core_dump=6保留空缺，power=3、ble=7起的编号维持原值。
 enum class BootStep : std::uint16_t {
-    safe_output=1, power=3, voltage, nvs, core_dump, ble,
+    safe_output=1, power=3, voltage, nvs, ble=7,
     wifi, imu, motor, outputs_off, timer, complete
 };
 
@@ -32,10 +32,8 @@ struct ControlSnapshot {
 // Event保存一条ErrorInfo及其致命标志。
 struct Event { std::uint32_t event_seq{}; ErrorInfo error{}; std::uint8_t flags{}; };
 
-// CrashState是panic Core dump保留的固定RAM诊断布局。
+// CrashState是RAM诊断区的固定布局。
 struct CrashState {
-    // schema标识RAM诊断布局版本，离线解码必须使用匹配ELF。
-    std::uint32_t schema{4};
     // boot_step和event_seq记录启动阶段与事件序号。
     BootStep boot_step{};
     std::uint32_t event_seq{};
