@@ -4,31 +4,39 @@
 
 namespace vehicle {
 namespace motor {
-PhaseDuty calculateSvpwmDuty(float uq_v, float electrical_angle_rad, float bus_reference_v)
+PhaseDuty CalculateSvpwmDuty(float uq_V, float electrical_angle_rad, float bus_reference_V)
 {
-    constexpr float pi = 3.14159265358979323846f;
-    constexpr float sqrt3 = 1.7320508075688772f;
-    constexpr float rounding_tolerance = 2.0e-6f;
-    if (!std::isfinite(uq_v) || !std::isfinite(electrical_angle_rad) ||
-        !std::isfinite(bus_reference_v) || bus_reference_v <= 0.0f ||
-        std::abs(uq_v) > bus_reference_v / sqrt3) { return {}; }
-    // 负Uq反转矢量，+pi/2将转子d轴角转换为q轴电压矢量角。
-    float angle_rad = std::fmod(electrical_angle_rad, 2.0f * pi) + pi / 2.0f;
-    if (uq_v < 0.0f) { angle_rad += pi; }
-    angle_rad = std::fmod(angle_rad, 2.0f * pi);
-    if (angle_rad < 0.0f) { angle_rad += 2.0f * pi; }
-    const int sector = std::min(6, static_cast<int>(angle_rad / (pi / 3.0f)) + 1);
-    const float amplitude_ratio = sqrt3 * std::abs(uq_v) / bus_reference_v;
-    const float active_vector_1_ratio = amplitude_ratio * std::sin(sector * pi / 3.0f - angle_rad);
-    const float active_vector_2_ratio = amplitude_ratio * std::sin(angle_rad - (sector - 1) * pi / 3.0f);
+    // Pi和Sqrt3分别用于相位归一化和调制比计算。
+    constexpr float Pi = 3.14159265358979323846f;
+    constexpr float Sqrt3 = 1.7320508075688772f;
+    // RoundingTolerance吸收浮点舍入误差，避免有效扇区被误判为超限。
+    constexpr float RoundingTolerance = 2.0e-6f;
+    if (!std::isfinite(uq_V) || !std::isfinite(electrical_angle_rad) ||
+        !std::isfinite(bus_reference_V) || bus_reference_V <= 0.0f ||
+        std::abs(uq_V) > bus_reference_V / Sqrt3) { return {}; }
+    // 负Uq反转矢量，+Pi/2将转子d轴角转换为q轴电压矢量角。
+    float angle_rad = std::fmod(electrical_angle_rad, 2.0f * Pi) + Pi / 2.0f;
+    if (uq_V < 0.0f) { angle_rad += Pi; }
+    angle_rad = std::fmod(angle_rad, 2.0f * Pi);
+    if (angle_rad < 0.0f) { angle_rad += 2.0f * Pi; }
+    // sector是把矢量角归一化到1~6后的扇区号。
+    const int sector = std::min(6, static_cast<int>(angle_rad / (Pi / 3.0f)) + 1);
+    // amplitude_ratio是Uq相对母线参考的调制比。
+    const float amplitude_ratio = Sqrt3 * std::abs(uq_V) / bus_reference_V;
+    // 两个基本矢量按正弦扇区位置分配作用比例。
+    const float active_vector_1_ratio = amplitude_ratio * std::sin(sector * Pi / 3.0f - angle_rad);
+    const float active_vector_2_ratio = amplitude_ratio * std::sin(angle_rad - (sector - 1) * Pi / 3.0f);
+    // zero_vector_ratio为负表示超出线性调制区。
     const float zero_vector_ratio = 1.0f - active_vector_1_ratio - active_vector_2_ratio;
-    if (active_vector_1_ratio < -rounding_tolerance || active_vector_2_ratio < -rounding_tolerance ||
-        zero_vector_ratio < -rounding_tolerance) { return {}; }
+    if (active_vector_1_ratio < -RoundingTolerance || active_vector_2_ratio < -RoundingTolerance ||
+        zero_vector_ratio < -RoundingTolerance) { return {}; }
+    // x、y、z复用第十一课六扇区表的查表参数。
     const float x = active_vector_1_ratio;
     const float y = active_vector_2_ratio;
     const float z = zero_vector_ratio * 0.5f;
     PhaseDuty duty{};
-    // 保留例程的六扇区表；左右轮共用此纯函数，PWM输出对象相互独立。
+    // 保留例程的六扇区表。
+    // 两个电机共用此纯函数，PWM输出对象相互独立。
     switch (sector) {
     case 1: duty = {x + y + z, y + z, z, true}; break;
     case 2: duty = {x + z, x + y + z, z, true}; break;

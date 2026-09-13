@@ -77,8 +77,9 @@ Desktop.ini
 *.suo       # Visual Studio Solution User Options
 *.sln.docstates # Visual Studio
 
-# user
-docs/
+# Local engineering/reference documents are not published.
+/docs/**
+!/docs/平衡车控制界面.html
 AGENTS.md
 .vscode/
 .agents/

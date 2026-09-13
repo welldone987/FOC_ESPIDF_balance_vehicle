@@ -1,9 +1,9 @@
 #include "sdkconfig.h"
 #if CONFIG_VEHICLE_WIFI_ENABLED
-#include "wifi_telemtry.hpp"
+#include "wifi_telemetry.hpp"
 
 #include "sdkconfig.h"
-#include "wifi_telemtry_config.hpp"
+#include "wifi_telemetry_config.hpp"
 
 #include <array>
 #include <cerrno>
@@ -25,23 +25,22 @@
 #include <unistd.h>
 
 namespace vehicle {
-namespace wifi_telemtry {
+namespace wifi_telemetry {
 namespace {
 
 /*
- * Wi-Fi事件回调只更新联网状态位，socket建立和数据发送由service()顺序执行。
+ * Wi-Fi事件回调只更新联网状态位，socket建立和数据发送由Service()顺序执行。
  * pending保存部分发送帧，sequence保证同一快照不会重复编码到发送队列。
  */
 
-// kWifiReady表示STA已经通过IP_EVENT_STA_GOT_IP获得可用地址。
-constexpr EventBits_t kWifiReady = BIT0;
-constexpr EventBits_t kConnectRequested = BIT1;
-constexpr char kTag[] = "wifi_telemetry";
-// 重连、发送阻塞和文本缓冲区参数的单位分别为ms、ms和字节。
-constexpr std::uint32_t kReconnectPeriodMs = 1000U;
-constexpr std::uint32_t kClientTimeoutMs = 1000U;
-constexpr std::size_t kBufferSize = 768U;
-constexpr char kHeader[] =
+// WifiReady表示STA已经通过IP_EVENT_STA_GOT_IP获得可用地址。
+constexpr EventBits_t WifiReady = BIT0;
+// ConnectRequested表示需要一次连接或重连尝试。
+constexpr EventBits_t ConnectRequested = BIT1;
+// Tag是Wi-Fi日志标签。
+constexpr char Tag[] = "wifi_telemetry";
+// Header是TCP v2协议头和21列字段名。
+constexpr char Header[] =
     "#balancing_vehicle_tcp,v2\n"
     "#time_s,pitch_deg,left_velocity_rad_s,right_velocity_rad_s,"
     "velocity_difference_rad_s,left_target_a,right_target_a,"
@@ -52,48 +51,53 @@ constexpr char kHeader[] =
 StaticEventGroup_t wifi_events_storage{};
 // wifi_events由事件回调设置，由服务任务读取。
 EventGroupHandle_t wifi_events = nullptr;
+// wifi_handler和ip_handler保存事件注册句柄。
 esp_event_handler_instance_t wifi_handler = nullptr;
 esp_event_handler_instance_t ip_handler = nullptr;
+// listener_socket和client_socket保存非阻塞监听与客户端socket。
 int listener_socket = -1;
 int client_socket = -1;
 // pending保存TCP尚未发送完的协议头或遥测行。
-std::array<char, kBufferSize> pending{};
+std::array<char, BufferSize> pending{};
 std::size_t pending_length = 0U;
 std::size_t pending_offset = 0U;
+// blocked_since_ms和last_connect_ms分别记录发送阻塞和上次连接请求的时刻，单位ms。
 std::uint32_t blocked_since_ms = 0U;
 std::uint32_t last_connect_ms = 0U;
-// 仅由service访问；连接请求成功后等待事件，不重复打断关联或DHCP。
+// 仅由Service访问。
+// 连接请求成功后等待事件，不重复打断关联或DHCP。
 bool reconnect_pending = false;
+// last_sequence记录最近编码过的快照序号。
 std::uint32_t last_sequence = 0U;
 
-// nowMilliseconds()把ESP高精度计时器转换为回绕可接受的毫秒时基。
-std::uint32_t nowMilliseconds()
+// NowMilliseconds()把ESP高精度计时器转换为回绕可接受的毫秒时基。
+std::uint32_t NowMilliseconds()
 {
     return static_cast<std::uint32_t>(esp_timer_get_time() / 1000LL);
 }
 
-// wifiEvent()把获得IP和断开事件映射为kWifiReady位的置位或清零。
-void wifiEvent(void *, esp_event_base_t base, std::int32_t id, void *event_data)
+// WifiEvent()把获得IP和断开事件映射为WifiReady位的置位或清零。
+void WifiEvent(void *, esp_event_base_t base, std::int32_t id, void *event_data)
 {
     if (wifi_events == nullptr) {
         return;
     }
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        xEventGroupSetBits(wifi_events, kWifiReady);
+        xEventGroupSetBits(wifi_events, WifiReady);
         const auto *event = static_cast<const ip_event_got_ip_t *>(event_data);
-        ESP_LOGI(kTag, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        ESP_LOGI(Tag, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        xEventGroupSetBits(wifi_events, kConnectRequested);
+        xEventGroupSetBits(wifi_events, ConnectRequested);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        xEventGroupClearBits(wifi_events, kWifiReady);
+        xEventGroupClearBits(wifi_events, WifiReady);
         const auto *event = static_cast<const wifi_event_sta_disconnected_t *>(event_data);
-        ESP_LOGW(kTag, "Disconnected: reason=%u", static_cast<unsigned>(event->reason));
-        xEventGroupSetBits(wifi_events, kConnectRequested);
+        ESP_LOGW(Tag, "Disconnected: reason=%u", static_cast<unsigned>(event->reason));
+        xEventGroupSetBits(wifi_events, ConnectRequested);
     }
 }
 
-// closeClient()关闭当前客户端并清空部分发送状态。
-void closeClient()
+// CloseClient()关闭当前客户端并清空部分发送状态。
+void CloseClient()
 {
     if (client_socket >= 0) {
         shutdown(client_socket, SHUT_RDWR);
@@ -105,18 +109,18 @@ void closeClient()
     blocked_since_ms = 0U;
 }
 
-// closeSockets()同时释放客户端和监听socket。
-void closeSockets()
+// CloseSockets()同时释放客户端和监听socket。
+void CloseSockets()
 {
-    closeClient();
+    CloseClient();
     if (listener_socket >= 0) {
         ::close(listener_socket);
         listener_socket = -1;
     }
 }
 
-// setNonBlocking()把socket切换为非阻塞模式，避免服务任务等待网络发送。
-bool setNonBlocking(int socket_descriptor)
+// SetNonBlocking()把socket切换为非阻塞模式，避免服务任务等待网络发送。
+bool SetNonBlocking(int socket_descriptor)
 {
     const int flags = fcntl(socket_descriptor, F_GETFL, 0);
     return flags >= 0 &&
@@ -125,7 +129,7 @@ bool setNonBlocking(int socket_descriptor)
 
 } // namespace
 
-esp_err_t initialize()
+esp_err_t Initialize()
 {
     // SSID和密码长度先按Wi-Fi字段容量校验，再复制到ESP-IDF配置结构。
     const std::size_t ssid_length = strnlen(CONFIG_VEHICLE_WIFI_SSID, 33U);
@@ -160,10 +164,10 @@ esp_err_t initialize()
         return result;
     }
     result = esp_event_handler_instance_register(
-        WIFI_EVENT, ESP_EVENT_ANY_ID, wifiEvent, nullptr, &wifi_handler);
+        WIFI_EVENT, ESP_EVENT_ANY_ID, WifiEvent, nullptr, &wifi_handler);
     if (result == ESP_OK) {
         result = esp_event_handler_instance_register(
-            IP_EVENT, IP_EVENT_STA_GOT_IP, wifiEvent, nullptr, &ip_handler);
+            IP_EVENT, IP_EVENT_STA_GOT_IP, WifiEvent, nullptr, &ip_handler);
     }
     if (result != ESP_OK) {
         return result;
@@ -179,7 +183,7 @@ esp_err_t initialize()
     wifi_config.sta.threshold.authmode =
         password_length == 0U ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
 
-    // 先启动STA，再由service()按事件状态发起连接和TCP监听。
+    // 先启动STA，再由Service()按事件状态发起连接和TCP监听。
     result = esp_wifi_set_mode(WIFI_MODE_STA);
     if (result == ESP_OK) {
         result = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
@@ -193,25 +197,26 @@ esp_err_t initialize()
     return result;
 }
 
-void service(const TelemetrySnapshot *snapshot)
+void Service(const TelemetrySnapshot *snapshot)
 {
-    // service()在非阻塞模式下推进完整的Wi-Fi和TCP状态机。
-    const std::uint32_t now_ms = nowMilliseconds();
+    // Service()在非阻塞模式下推进完整的Wi-Fi和TCP状态机。
+    const std::uint32_t now_ms = NowMilliseconds();
     const bool wifi_ready =
-        (xEventGroupGetBits(wifi_events) & kWifiReady) != 0U;
+        (xEventGroupGetBits(wifi_events) & WifiReady) != 0U;
     if (!wifi_ready) {
-        // 启动或断线事件触发一次延时重试；连接中和等待DHCP期间不重复请求。
-        closeSockets();
-        const EventBits_t events = xEventGroupClearBits(wifi_events, kConnectRequested);
-        if ((events & kConnectRequested) != 0U) {
+        // 启动或断线事件触发一次延时重试。
+        // 连接中和等待DHCP期间不重复请求。
+        CloseSockets();
+        const EventBits_t events = xEventGroupClearBits(wifi_events, ConnectRequested);
+        if ((events & ConnectRequested) != 0U) {
             reconnect_pending = true;
             last_connect_ms = now_ms;
         }
-        if (reconnect_pending && (now_ms - last_connect_ms) >= kReconnectPeriodMs) {
+        if (reconnect_pending && (now_ms - last_connect_ms) >= ReconnectPeriod_ms) {
             reconnect_pending = false;
             const esp_err_t result = esp_wifi_connect();
             if (result != ESP_OK) {
-                ESP_LOGW(kTag, "Connect failed: %s", esp_err_to_name(result));
+                ESP_LOGW(Tag, "Connect failed: %s", esp_err_to_name(result));
                 reconnect_pending = true;
                 last_connect_ms = now_ms;
             }
@@ -220,8 +225,8 @@ void service(const TelemetrySnapshot *snapshot)
     }
 
     reconnect_pending = false;
-    if (!config::kTcpDebugEnabled) {
-        closeSockets();
+    if (!TcpDebugEnabled) {
+        CloseSockets();
         return;
     }
 
@@ -233,7 +238,7 @@ void service(const TelemetrySnapshot *snapshot)
         address.sin_family = AF_INET;
         address.sin_addr.s_addr = htonl(INADDR_ANY);
         address.sin_port = htons(CONFIG_VEHICLE_WIFI_TELEMETRY_PORT);
-        if (listener_socket < 0 || !setNonBlocking(listener_socket) ||
+        if (listener_socket < 0 || !SetNonBlocking(listener_socket) ||
             setsockopt(
                 listener_socket,
                 SOL_SOCKET,
@@ -245,7 +250,7 @@ void service(const TelemetrySnapshot *snapshot)
                 reinterpret_cast<sockaddr *>(&address),
                 sizeof(address)) != 0 ||
             listen(listener_socket, 1) != 0) {
-            closeSockets();
+            CloseSockets();
             return;
         }
     }
@@ -257,19 +262,19 @@ void service(const TelemetrySnapshot *snapshot)
             return;
         }
         int enabled = 1;
-        if (!setNonBlocking(client_socket) ||
+        if (!SetNonBlocking(client_socket) ||
             setsockopt(
                 client_socket,
                 IPPROTO_TCP,
                 TCP_NODELAY,
                 &enabled,
                 sizeof(enabled)) != 0) {
-            closeClient();
+            CloseClient();
             return;
         }
-        static_assert(sizeof(kHeader) - 1U <= kBufferSize);
-        std::memcpy(pending.data(), kHeader, sizeof(kHeader) - 1U);
-        pending_length = sizeof(kHeader) - 1U;
+        static_assert(sizeof(Header) - 1U <= BufferSize);
+        std::memcpy(pending.data(), Header, sizeof(Header) - 1U);
+        pending_length = sizeof(Header) - 1U;
         pending_offset = 0U;
         last_sequence = 0U;
     }
@@ -290,12 +295,12 @@ void service(const TelemetrySnapshot *snapshot)
             // 客户端持续阻塞超过超时阈值时断开，释放服务任务的发送状态。
             if (blocked_since_ms == 0U) {
                 blocked_since_ms = now_ms;
-            } else if ((now_ms - blocked_since_ms) >= kClientTimeoutMs) {
-                closeClient();
+            } else if ((now_ms - blocked_since_ms) >= ClientTimeout_ms) {
+                CloseClient();
             }
             return;
         }
-        closeClient();
+        CloseClient();
         return;
     }
     pending_length = 0U;
@@ -307,8 +312,8 @@ void service(const TelemetrySnapshot *snapshot)
     }
 
     // 遥测速度沿用控制器的左右方向约定，velocity_difference为左减右。
-    const float left = snapshot->left_velocity_rad_s;
-    const float right = snapshot->right_velocity_rad_s;
+    const float velocity_M0 = snapshot->velocity_M0_rad_s;
+    const float velocity_M1 = snapshot->velocity_M1_rad_s;
     // device_time_us拆成秒和微秒字段，保持LF分隔的文本协议格式。
     const int length = std::snprintf(
         pending.data(),
@@ -317,16 +322,16 @@ void service(const TelemetrySnapshot *snapshot)
         static_cast<long long>(snapshot->device_time_us / 1000000LL),
         static_cast<long long>(snapshot->device_time_us % 1000000LL),
         static_cast<double>(snapshot->pitch_deg),
-        static_cast<double>(left),
-        static_cast<double>(right),
-        static_cast<double>(left - right),
-        static_cast<double>(snapshot->left_target_a),
-        static_cast<double>(snapshot->right_target_a),
-        static_cast<double>(snapshot->left_iq_measured_a), static_cast<double>(snapshot->right_iq_measured_a),
-        static_cast<double>(snapshot->left_uq_applied_v), static_cast<double>(snapshot->right_uq_applied_v),
-        static_cast<double>(snapshot->left_phase_a_a), static_cast<double>(snapshot->left_phase_b_a),
-        static_cast<double>(snapshot->left_phase_c_a), static_cast<double>(snapshot->right_phase_a_a),
-        static_cast<double>(snapshot->right_phase_b_a), static_cast<double>(snapshot->right_phase_c_a),
+        static_cast<double>(velocity_M0),
+        static_cast<double>(velocity_M1),
+        static_cast<double>(velocity_M0 - velocity_M1),
+        static_cast<double>(snapshot->target_M0_A),
+        static_cast<double>(snapshot->target_M1_A),
+        static_cast<double>(snapshot->iq_measured_M0_A), static_cast<double>(snapshot->iq_measured_M1_A),
+        static_cast<double>(snapshot->uq_applied_M0_V), static_cast<double>(snapshot->uq_applied_M1_V),
+        static_cast<double>(snapshot->phase_a_M0_A), static_cast<double>(snapshot->phase_b_M0_A),
+        static_cast<double>(snapshot->phase_c_M0_A), static_cast<double>(snapshot->phase_a_M1_A),
+        static_cast<double>(snapshot->phase_b_M1_A), static_cast<double>(snapshot->phase_c_M1_A),
         static_cast<double>(snapshot->current_dt_s), static_cast<long long>(snapshot->current_sample_age_us),
         static_cast<unsigned>(snapshot->current_saturated), static_cast<unsigned>(snapshot->current_valid));
     // 只有整行适合缓冲区时才提交为下一次非阻塞发送帧。
@@ -336,7 +341,7 @@ void service(const TelemetrySnapshot *snapshot)
     }
 }
 
-} // namespace wifi_telemtry
+} // namespace wifi_telemetry
 } // namespace vehicle
 
 #endif
