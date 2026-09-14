@@ -1,6 +1,6 @@
 #pragma once
 
-#include "error_info.hpp"
+#include "error_config.hpp"
 #include "esp_simplefoc.h"
 
 namespace vehicle {

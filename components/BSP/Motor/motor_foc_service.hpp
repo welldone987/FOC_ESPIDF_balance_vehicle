@@ -1,6 +1,6 @@
 #pragma once
 #include <cstdint>
-#include "error_info.hpp"
+#include "error_config.hpp"
 #include "motor_timing.hpp"
 
 namespace vehicle {

@@ -63,7 +63,7 @@ std::uint16_t telemetry_handle{};
 // subscribed标记客户端是否已订阅遥测通知。
 bool subscribed=false;
 
-int StartAdvertising(ErrorInfo *error=nullptr);
+int StartAdvertising(ErrorInfo *error);
 
 // PublishConnection()向BleTask队列写入连接状态变化。
 void PublishConnection(bool connected)
@@ -100,7 +100,8 @@ int GapEvent(ble_gap_event *event, void *)
             PublishConnection(true);
         } else {
             RememberBle(event->connect.status,ErrorPoint::ble_connect);
-            (void)StartAdvertising();
+            ErrorInfo advertising_error{};
+            if (StartAdvertising(&advertising_error) != 0) { diagnostics::Record(advertising_error); }
         }
         return 0;
 
@@ -117,11 +118,18 @@ int GapEvent(ble_gap_event *event, void *)
         connection_handle = BLE_HS_CONN_HANDLE_NONE;
         subscribed=false;
         PublishConnection(false);
-        (void)StartAdvertising();
+        {
+            ErrorInfo advertising_error{};
+            if (StartAdvertising(&advertising_error) != 0) { diagnostics::Record(advertising_error); }
+        }
         return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
-        (void)StartAdvertising();
+        {
+            // 广播结束后重启；失败时由本处记录一次事件。
+            ErrorInfo advertising_error{};
+            if (StartAdvertising(&advertising_error) != 0) { diagnostics::Record(advertising_error); }
+        }
         return 0;
 
     case BLE_GAP_EVENT_CONN_UPDATE:
@@ -148,6 +156,7 @@ int GapEvent(ble_gap_event *event, void *)
 }
 
 // StartAdvertising()发布设备名和服务UUID，并启动可连接广播。
+// 只填写ErrorInfo，由调用者决定是否记录事件，避免同一失败重复入环。
 int StartAdvertising(ErrorInfo *error)
 {
     ble_hs_adv_fields advertising_fields{};
@@ -159,9 +168,7 @@ int StartAdvertising(ErrorInfo *error)
 
     int rc = ble_gap_adv_set_fields(&advertising_fields);
     if (rc != 0) {
-        VEHICLE_ERROR(error,ESP_FAIL,ble_adv_fields,rc);
-        RememberBle(rc,ErrorPoint::ble_adv_fields);
-        return rc;
+        return VEHICLE_ERROR(error,ESP_FAIL,ble_adv_fields,rc);
     }
 
     ble_hs_adv_fields scan_response_fields{};
@@ -171,9 +178,7 @@ int StartAdvertising(ErrorInfo *error)
 
     rc = ble_gap_adv_rsp_set_fields(&scan_response_fields);
     if (rc != 0) {
-        VEHICLE_ERROR(error,ESP_FAIL,ble_scan_fields,rc);
-        RememberBle(rc,ErrorPoint::ble_scan_fields);
-        return rc;
+        return VEHICLE_ERROR(error,ESP_FAIL,ble_scan_fields,rc);
     }
 
     ble_gap_adv_params parameters{};
@@ -184,7 +189,6 @@ int StartAdvertising(ErrorInfo *error)
         own_address_type, nullptr, BLE_HS_FOREVER, &parameters, GapEvent, nullptr);
     if (rc == BLE_HS_EALREADY) { rc=0; }
     if (rc) { VEHICLE_ERROR(error,ESP_FAIL,ble_advertise,rc); }
-    RememberBle(rc,ErrorPoint::ble_advertise);
     return rc;
 }
 

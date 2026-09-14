@@ -1,6 +1,9 @@
 #include "freertos_tasks.hpp"
 
 #include "ble_command_service.hpp"
+#include "diagnostic_sink.hpp"
+
+#include "esp_timer.h"
 
 namespace vehicle {
 namespace freertos_tasks {
@@ -19,14 +22,20 @@ TaskHandle_t CreateBleTask(TaskContext &context)
         &context,BlePriority,ble_stack,&ble_storage,ServiceCore);
 }
 
-// BleTask初始化BLE并把结果写入启动队列，随后进入报文消费循环。
+// BleTask初始化BLE并把结果写入启动队列，随后作为低频服务泵运行。
 void BleTask(void *argument)
 {
     auto &context=*static_cast<TaskContext *>(argument);
     BleStartup startup{};
     startup.result=ble::Initialize(context.telemetry_queue,&startup.error);
     xQueueOverwrite(context.ble_startup_queue,&startup);
-    if (startup.result == ESP_OK) { ble::Run(context.command_queue); }
+    if (startup.result == ESP_OK) {
+        // 服务泵：低频输出诊断事件，并处理一轮BLE原始报文。
+        for (;;) {
+            diagnostics::sink::ReportSerial(esp_timer_get_time());
+            ble::Run(context.command_queue);
+        }
+    }
     // 初始化失败不重试，也不放行控制。
     // 静态任务资源保留供诊断。
     for (;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }

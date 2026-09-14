@@ -47,9 +47,6 @@ ControlOutput Update(ControllerState &state, const ControlInput &input, float dt
         Initialize(state);
         return {};
     }
-    // 本地平衡使能独立于遥控。
-    // 未ARM时闭合零速/零偏航环。
-    if (!input.balancing) { Initialize(state); return {0, 0, 0, 0, 0, true}; }
     state.outer_elapsed_s += dt_s;
     if (state.outer_elapsed_s >= OuterPeriod_s) {
         // outer_dt_s使用实际累计时间，而不是标称周期。

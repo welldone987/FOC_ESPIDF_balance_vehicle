@@ -7,7 +7,6 @@
 #include "ble_diagnostic_service.hpp"
 #include "ble_telemetry_service.hpp"
 #include "ble_transport.hpp"
-#include "control_config.hpp"
 #include "diagnostics.hpp"
 #include "motion_command.hpp"
 #include "remote_protocol.hpp"
@@ -36,6 +35,8 @@ std::uint8_t incoming_buffer[sizeof(transport::Incoming)]{};
 QueueHandle_t incoming_queue{};
 // initialized避免重复初始化。
 bool initialized=false;
+// connection_epoch跟踪连接代次，变化时清空运动目标。
+std::uint32_t connection_epoch{};
 
 // OnCommandAccess()把命令特征的WRITE报文复制到长度1队列。
 int OnCommandAccess(std::uint16_t conn_handle,
@@ -90,40 +91,34 @@ esp_err_t Initialize(QueueHandle_t telemetry_queue, ErrorInfo *error)
     return ESP_OK;
 }
 
+// Run()处理一轮原始报文（最长等待100ms）；由BleTask循环调用。
 void Run(QueueHandle_t command_queue)
 {
-    // epoch跟踪连接代次，变化时清空运动目标。
-    std::uint32_t epoch{};
-    for (;;) {
-        // 低优先级BleTask打印，避免串口吞吐占用NimBLE主机回调或ControlTask。
-        diagnostic::ReportSerial(esp_timer_get_time());
-        transport::Incoming input{};
-        if (xQueueReceive(incoming_queue,&input,pdMS_TO_TICKS(100)) != pdTRUE) { continue; }
-        if (input.epoch != epoch) {
-            epoch=input.epoch;
-            const control::MotionCommand zero{};
-            xQueueOverwrite(command_queue,&zero);
-        }
-        if (!input.connected || input.length_bytes == 0) { continue; }
-        // parsed保存解析后的X,Y百分比。
-        RemoteCommand parsed{};
-        if (!ParseCommand(std::string_view(input.text,input.length_bytes),parsed)) {
-            ErrorInfo error{};
-            VEHICLE_ERROR(&error,ESP_ERR_INVALID_ARG,ble_command,0,static_cast<float>(input.length_bytes),20,-1, ErrorValue | ErrorThreshold);
-            diagnostics::Record(error);
-            // 无效输入不能让旧非零目标继续有效。
-            const control::MotionCommand zero{};
-            xQueueOverwrite(command_queue,&zero);
-            continue;
-        }
-        const control::MotionCommand command{
-            parsed.throttle_percent * control::DriveSpeedLimit_rad_s / 100.0f,
-            parsed.steering_percent * control::YawRateLimit_rad_s / 100.0f,
-            input.received_us,true};
-        // 长度1队列只保留最新值。
-        // 过期判断使用接收时刻，不能因排队延长寿命。
-        xQueueOverwrite(command_queue,&command);
+    transport::Incoming input{};
+    if (xQueueReceive(incoming_queue,&input,pdMS_TO_TICKS(100)) != pdTRUE) { return; }
+    // connection_epoch跟踪连接代次，变化时清空运动目标。
+    if (input.epoch != connection_epoch) {
+        connection_epoch=input.epoch;
+        const control::MotionCommand zero{};
+        xQueueOverwrite(command_queue,&zero);
     }
+    if (!input.connected || input.length_bytes == 0) { return; }
+    // parsed保存解析后的X,Y百分比。
+    RemoteCommand parsed{};
+    if (!ParseCommand(std::string_view(input.text,input.length_bytes),parsed)) {
+        ErrorInfo error{};
+        VEHICLE_ERROR(&error,ESP_ERR_INVALID_ARG,ble_command,0,static_cast<float>(input.length_bytes),20,-1, ErrorValue | ErrorThreshold);
+        diagnostics::Record(error);
+        // 无效输入不能让旧非零目标继续有效。
+        const control::MotionCommand zero{};
+        xQueueOverwrite(command_queue,&zero);
+        return;
+    }
+    const auto command=control::MakeMotionCommand(
+        parsed.steering_percent,parsed.throttle_percent,input.received_us);
+    // 长度1队列只保留最新值。
+    // 过期判断使用接收时刻，不能因排队延长寿命。
+    xQueueOverwrite(command_queue,&command);
 }
 
 } // namespace ble

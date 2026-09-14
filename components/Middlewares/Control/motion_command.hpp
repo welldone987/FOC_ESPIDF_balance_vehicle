@@ -4,8 +4,8 @@
 namespace vehicle {
 namespace control {
 /*
- * BleTask把X,Y百分比解析为MotionCommand并写入长度1队列。
- * ControlTask非阻塞读取最新目标并独立检查接收时刻时效。
+ * BleTask解析X,Y百分比并调用MakeMotionCommand()换算为车辆坐标目标，
+ * 写入长度1队列；ControlTask非阻塞读取最新目标并独立检查接收时刻时效。
  * MotionCommand保留原始接收时间，排队不刷新寿命。
  */
 // MotionCommand保存车辆坐标下的最新遥控目标。
@@ -25,6 +25,13 @@ constexpr bool IsCommandFresh(const MotionCommand &command, std::int64_t now_us,
 {
     return command.valid && command.received_us >= ready_us &&
         now_us >= command.received_us && now_us-command.received_us < CommandTimeout_us;
+}
+// MakeMotionCommand()把遥控百分比（±100）换算为车辆坐标目标，限值取自控制配置。
+constexpr MotionCommand MakeMotionCommand(float steering_percent, float throttle_percent,
+                                          std::int64_t received_us)
+{
+    return {throttle_percent * DriveSpeedLimit_rad_s / 100.0f,
+        steering_percent * YawRateLimit_rad_s / 100.0f, received_us, true};
 }
 
 } // namespace control

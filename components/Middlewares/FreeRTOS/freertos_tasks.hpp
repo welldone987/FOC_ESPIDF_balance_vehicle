@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 #include "sdkconfig.h"
-#include "error_info.hpp"
+#include "error_config.hpp"
 #include "freertos_tasks_config.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"

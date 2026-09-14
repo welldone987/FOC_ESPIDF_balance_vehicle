@@ -57,5 +57,4 @@ extern "C" void app_main(void)
         Finish(BootStep::timer,ESP_ERR_NO_MEM,error);
         return;
     }
-    vehicle::diagnostics::ObserveControlStart();
 }

@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "error_info.hpp"
+#include "error_config.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 

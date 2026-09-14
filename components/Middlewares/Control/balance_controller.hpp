@@ -19,8 +19,6 @@ struct ControlInput {
     // throttle_velocity_rad_s和yaw_rate_rad_s是遥控目标，单位rad/s。
     float throttle_velocity_rad_s;
     float yaw_rate_rad_s;
-    // balancing标记本地平衡使能。
-    bool balancing;
     // driving标记命令新鲜有效时跟踪遥控目标，否则零速平衡。
     bool driving;
 };

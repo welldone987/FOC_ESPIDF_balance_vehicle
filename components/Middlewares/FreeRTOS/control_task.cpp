@@ -6,6 +6,7 @@
 #include "motion_command.hpp"
 #include "telemetry_snapshot.hpp"
 #include "bmi160_attitude.hpp"
+#include "diagnostic_sink.hpp"
 #include "diagnostics.hpp"
 #include "encoder_config.hpp"
 #include "motor_config.hpp"
@@ -44,14 +45,14 @@ std::int64_t cycle_started_us{};
     if (cycle_started_us != 0) { cycle_timing.elapsed_us=esp_timer_get_time()-cycle_started_us; }
     ErrorInfo secondary{};
     const auto rc=motor::InhibitOutputs(&secondary);
-    diagnostics::CommitControlTiming(cycle_timing);
+    diagnostics::CommitFaultTiming(cycle_timing);
     diagnostics::Record(error,true);
     if (rc != ESP_OK) { diagnostics::Record(secondary); }
     motor::DisableOutputs();
     if (control_timer) { esp_timer_stop(control_timer); }
     // 此时输出已禁能、定时器已停止。
     // 一次性串口报告不占用运行周期预算。
-    diagnostics::PrintControlFault(error);
+    diagnostics::sink::PrintControlFault(error);
     if (rc != ESP_OK) {
         ESP_LOGE("control_diag","CONTROL_SECONDARY disable request failed: code=%s raw=%ld file=%s:%lu",
             esp_err_to_name(rc),static_cast<long>(secondary.raw_code),secondary.file ? secondary.file : "?",static_cast<unsigned long>(secondary.line));
@@ -144,11 +145,10 @@ void ControlTask(void *argument)
     // latest_command保存最近接收的运动目标。
     control::MotionCommand latest_command{};
 
-    // sequence、balance_cycles和skipped_releases记录周期与通知统计。
+    // sequence和skipped_releases记录周期与通知统计。
     std::uint32_t sequence = 0U;
-    std::uint32_t balance_cycles=0U, skipped_releases=0U;
-    // was_balancing和was_driving保存上一轮的使能与目标状态。
-    bool was_balancing = false;
+    std::uint32_t skipped_releases=0U;
+    // was_driving保存上一轮目标时效状态。
     bool was_driving = false;
     // current_saturated汇总本周期电流环饱和，供外环冻结积分。
     bool current_saturated = false;
@@ -166,7 +166,7 @@ void ControlTask(void *argument)
         cycle_started_us=cycle_time_us;
         if (notifications>1) { skipped_releases+=notifications-1; }
         cycle_timing={};
-        cycle_timing.cycle=sequence+1; cycle_timing.balance_cycle=balance_cycles;
+        cycle_timing.cycle=sequence+1;
         cycle_timing.notifications=notifications; cycle_timing.skipped_releases=skipped_releases;
         cycle_timing.first_release=previous_cycle_us == 0;
         cycle_timing.dt_us=control::SampleInterval(cycle_time_us,previous_cycle_us,motor::ControlPeriod_us);
@@ -188,16 +188,14 @@ void ControlTask(void *argument)
         was_driving=driving;
         // command在本轮无效时退化为零目标。
         const auto command=driving ? latest_command : control::MotionCommand{};
-        const bool balancing=true;
-        const bool starting = balancing && !was_balancing;
-        cycle_timing.balancing=balancing; cycle_timing.driving=driving; cycle_timing.starting=starting;
-        if (balancing) { cycle_timing.balance_cycle=++balance_cycles; }
+        // 首次控制周期复位控制器现场；first_release只在该周期为true。
+        const bool starting=cycle_timing.first_release;
+        cycle_timing.driving=driving;
         if (starting) {
             control::Initialize(controller);
             output = {};
             current_saturated = false;
         }
-        was_balancing = balancing;
         control::ObserveCurrentSaturation(controller, current_saturated);
         // attitude_due标记本轮到姿态截止点。
         // attitude_dt_s是实际姿态间隔，单位s。
@@ -222,7 +220,7 @@ void ControlTask(void *argument)
             const float pitch_rad = attitude.pitch_deg * control::DegToRad;
             const float pitch_rate_rad_s = attitude.pitch_rate_deg_s * control::DegToRad;
             if (!attitude.valid || !std::isfinite(pitch_rad) || !std::isfinite(pitch_rate_rad_s)) { VEHICLE_ERROR(&error, ESP_ERR_INVALID_RESPONSE, imu_filter,0); StopControl(error); }
-            if (balancing && std::abs(pitch_rad - control::PitchOffset_rad) > control::FallAngle_rad) { VEHICLE_ERROR(&error, ESP_ERR_INVALID_STATE, fall,0, pitch_rad-control::PitchOffset_rad, control::FallAngle_rad, -1, ErrorValue | ErrorThreshold); StopControl(error); }
+            if (std::abs(pitch_rad - control::PitchOffset_rad) > control::FallAngle_rad) { VEHICLE_ERROR(&error, ESP_ERR_INVALID_STATE, fall,0, pitch_rad-control::PitchOffset_rad, control::FallAngle_rad, -1, ErrorValue | ErrorThreshold); StopControl(error); }
             if (!(attitude_dt_s > 0.0f && attitude_dt_s <= control::MaximumControlGap_s)) { VEHICLE_ERROR(&error, ESP_ERR_TIMEOUT, attitude_gap,0, attitude_dt_s, attitude_dt_s <= 0.0f ? 0.0f : control::MaximumControlGap_s, -1, ErrorValue | ErrorThreshold); StopControl(error); }
         }
         // 编码器仍每个电流周期采集。
@@ -243,16 +241,14 @@ void ControlTask(void *argument)
             output = control::Update(controller, {
                 wheels.velocity_M0_rad_s, wheels.velocity_M1_rad_s,
                 pitch_rad, pitch_rate_rad_s, command.velocity_rad_s,
-                command.yaw_rate_rad_s, balancing, driving}, attitude_dt_s);
+                command.yaw_rate_rad_s, driving}, attitude_dt_s);
             cycle_timing.outer_us=esp_timer_get_time()-outer_start;
             if (!output.valid) { VEHICLE_ERROR(&error, ESP_ERR_INVALID_RESPONSE, control_output,0); StopControl(error); }
         }
-        // current保存本周期电流反馈。
+        // current保存本周期电流反馈；电流环每个周期都执行。
         motor::CurrentFeedback current{};
-        if (balancing) {
-            cycle_timing.stage=control::ControlStage::current;
-            if (motor::RunCurrentControl({output.target_M0_A, output.target_M1_A},&current,&error,&cycle_timing.current) != ESP_OK) { StopControl(error); }
-        }
+        cycle_timing.stage=control::ControlStage::current;
+        if (motor::RunCurrentControl({output.target_M0_A, output.target_M1_A},&current,&error,&cycle_timing.current) != ESP_OK) { StopControl(error); }
         current_saturated = current.sample_M0.voltage_saturated || current.sample_M1.voltage_saturated ||
             current.sample_M0.reference_limited || current.sample_M1.reference_limited;
         if (esp_timer_get_time() - cycle_time_us > static_cast<std::int64_t>(control::MaximumControlGap_s * 1.0e6f)) {
@@ -262,9 +258,6 @@ void ControlTask(void *argument)
         }
         ++sequence;
         cycle_timing.stage=control::ControlStage::publish;
-        diagnostics::CommitControlSnapshot({cycle_time_us,sequence,attitude.pitch_deg,
-            wheels.velocity_M0_rad_s,wheels.velocity_M1_rad_s,output.target_M0_A,output.target_M1_A,
-            current.sample_M0.iq_measured_A,current.sample_M1.iq_measured_A,cycle_dt_s,true});
         // snapshot发布到遥测队列，供BLE .007和Wi-Fi消费。
         const control::TelemetrySnapshot snapshot{
             cycle_time_us, sequence, attitude.pitch_deg,
@@ -279,7 +272,10 @@ void ControlTask(void *argument)
         if (context.telemetry_queue) { xQueueOverwrite(context.telemetry_queue, &snapshot); }
         cycle_timing.stage=control::ControlStage::complete;
         cycle_timing.elapsed_us=esp_timer_get_time()-cycle_time_us;
-        diagnostics::CommitControlTiming(cycle_timing);
+        // 控制现场与计时在周期末以单次临界区提交。
+        diagnostics::CommitControlFrame({cycle_time_us,sequence,attitude.pitch_deg,
+            wheels.velocity_M0_rad_s,wheels.velocity_M1_rad_s,output.target_M0_A,output.target_M1_A,
+            current.sample_M0.iq_measured_A,current.sample_M1.iq_measured_A,cycle_dt_s,true},cycle_timing);
     }
 }
 

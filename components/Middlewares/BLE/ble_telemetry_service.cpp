@@ -1,7 +1,6 @@
 #include "ble_telemetry_service.hpp"
 
 #include "ble_config.hpp"
-#include "ble_diagnostic_service.hpp"
 #include "ble_transport.hpp"
 #include "diagnostics.hpp"
 #include "telemetry_protocol.hpp"
@@ -36,7 +35,6 @@ TelemetryPacket LatestTelemetry()
 // 定时事件与GAP回调均在NimBLE主机执行，连接状态不跨任务共享。
 void SendTelemetry(ble_npl_event *)
 {
-    diagnostic::Prepare();
     if (transport::Subscribed() && transport::ConnectionHandle()!=BLE_HS_CONN_HANDLE_NONE) {
         const auto packet=LatestTelemetry();
         const int rc=transport::Notify(packet.data(),packet.size());
