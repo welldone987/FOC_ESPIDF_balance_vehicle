@@ -37,8 +37,9 @@ control::ControlTiming cycle_timing{};
 std::int64_t cycle_started_us{};
 
 
-// StopControl()关闭电机输出后挂起控制任务，避免故障状态继续驱动执行器。
-[[noreturn]] void StopControl(const ErrorInfo &error, bool boot_failure=false)
+// StopFault()关闭电机输出后挂起控制任务，避免故障状态继续驱动执行器。
+// boot_failure为true时按failure_step补报启动摘要。
+[[noreturn]] void StopFault(const ErrorInfo &error, bool boot_failure, diagnostics::BootStep failure_step)
 {
     if (cycle_started_us != 0) { cycle_timing.elapsed_us=esp_timer_get_time()-cycle_started_us; }
     ErrorInfo secondary{};
@@ -56,15 +57,19 @@ std::int64_t cycle_started_us{};
             esp_err_to_name(rc),static_cast<long>(secondary.raw_code),secondary.file ? secondary.file : "?",static_cast<unsigned long>(secondary.line));
     }
     if (boot_failure) {
-        diagnostics::Boot(static_cast<diagnostics::BootStep>(error.point_id),"FAIL",error.code);
+        diagnostics::Boot(failure_step,"FAIL",error.code);
         ESP_LOGE("boot","BOOT_SUMMARY FAIL point=%u raw=%ld at %s:%lu",static_cast<unsigned>(error.point_id),static_cast<long>(error.raw_code),error.file,static_cast<unsigned long>(error.line));
     }
     for (;;) { vTaskDelay(pdMS_TO_TICKS(1000U)); }
 }
+// StopControl()运行期故障停机：只记录故障，不涉及启动步骤。
+[[noreturn]] void StopControl(const ErrorInfo &error) { StopFault(error,false,diagnostics::BootStep::complete); }
+// StopBootFailure()启动步骤失败停机：直接使用已知步骤，不反推point。
+[[noreturn]] void StopBootFailure(const ErrorInfo &error, diagnostics::BootStep step) { StopFault(error,true,step); }
 // BootResult()在启动步骤失败时转入锁存停机，否则输出启动日志。
 void BootResult(diagnostics::BootStep step, esp_err_t rc, const ErrorInfo &error)
 {
-    if (rc != ESP_OK) { StopControl(error,true); }
+    if (rc != ESP_OK) { StopBootFailure(error,step); }
     diagnostics::Boot(step,"OK",rc);
 }
 
@@ -98,10 +103,10 @@ void ControlTask(void *argument)
     esp_err_t result=imu::Initialize(&error);
     BootResult(diagnostics::BootStep::imu,result,error);
     diagnostics::Boot(diagnostics::BootStep::motor,"BEGIN");
-    // BSP不依赖Middlewares，电机子步骤以ErrorPoint编号（0x3xx）上报；
-    // 该值会写入boot_step并出现在启动日志，离线解码按ErrorPoint解读。
+    // BSP不依赖Middlewares；电机子步骤以ErrorPoint编号（0x3xx）上报，
+    // 由BootSubstep打印 boot_substep=0x3xx，避免与BootStep编号混用。
     result=motor::Initialize(&error,[](std::uint16_t step,const char *state) {
-        diagnostics::Boot(static_cast<diagnostics::BootStep>(step),state);
+        diagnostics::BootSubstep(step,state);
     });
     BootResult(diagnostics::BootStep::motor,result,error);
     diagnostics::Boot(diagnostics::BootStep::outputs_off,"BEGIN");
@@ -130,11 +135,10 @@ void ControlTask(void *argument)
     if (result == ESP_OK) {
         result = esp_timer_start_periodic(timer, motor::ControlPeriod_us);
     }
-    if (result != ESP_OK) { VEHICLE_ERROR(&error,result,control_timer,esp,result); }
+    if (result != ESP_OK) { VEHICLE_ERROR(&error,result,control_timer,result); }
     BootResult(diagnostics::BootStep::timer,result,error);
     diagnostics::Boot(diagnostics::BootStep::complete,"OK");
     ESP_LOGI("boot","BOOT_SUMMARY OK");
-    diagnostics::CompleteBoot();
     // command_ready_us之后的命令才被采纳，用于拒绝初始化期间的目标。
     const auto command_ready_us=esp_timer_get_time();
     // latest_command保存最近接收的运动目标。
@@ -169,16 +173,16 @@ void ControlTask(void *argument)
         const float cycle_dt_s = cycle_timing.dt_us * 1.0e-6f;
         previous_cycle_us = cycle_time_us;
         cycle_timing.stage=control::ControlStage::command;
-        if (!(cycle_dt_s > 0.0f && cycle_dt_s <= control::MaximumControlGap_s)) { VEHICLE_ERROR(&error, ESP_ERR_TIMEOUT, control_gap, application, 0, cycle_dt_s, control::MaximumControlGap_s, -1, 3, 1); StopControl(error); }
+        if (!(cycle_dt_s > 0.0f && cycle_dt_s <= control::MaximumControlGap_s)) { VEHICLE_ERROR(&error, ESP_ERR_TIMEOUT, control_gap,0, cycle_dt_s, cycle_dt_s <= 0.0f ? 0.0f : control::MaximumControlGap_s, -1, ErrorValue | ErrorThreshold); StopControl(error); }
         // 非阻塞读取最新目标。
         // ControlTask独立检查时效，包括BleTask饥饿的情况。
         (void)xQueueReceive(context.command_queue,&latest_command,0);
         const bool driving=control::IsCommandFresh(latest_command,cycle_time_us,command_ready_us);
         if (was_driving && !driving && latest_command.valid) {
             ErrorInfo timeout{};
-            VEHICLE_ERROR(&timeout,ESP_ERR_TIMEOUT,ble_command_timeout,application,0,
+            VEHICLE_ERROR(&timeout,ESP_ERR_TIMEOUT,ble_command_timeout,0,
                 static_cast<float>(cycle_time_us-latest_command.received_us),
-                static_cast<float>(control::CommandTimeout_us),-1,3,1);
+                static_cast<float>(control::CommandTimeout_us),-1, ErrorValue | ErrorThreshold);
             diagnostics::Record(timeout); // 只复制；串口格式化在BleTask低频观察。
         }
         was_driving=driving;
@@ -217,9 +221,9 @@ void ControlTask(void *argument)
             }
             const float pitch_rad = attitude.pitch_deg * control::DegToRad;
             const float pitch_rate_rad_s = attitude.pitch_rate_deg_s * control::DegToRad;
-            if (!attitude.valid || !std::isfinite(pitch_rad) || !std::isfinite(pitch_rate_rad_s)) { VEHICLE_ERROR(&error, ESP_ERR_INVALID_RESPONSE, imu_filter, application, 0); StopControl(error); }
-            if (balancing && std::abs(pitch_rad - control::PitchOffset_rad) > control::FallAngle_rad) { VEHICLE_ERROR(&error, ESP_ERR_INVALID_STATE, fall, application, 0, pitch_rad-control::PitchOffset_rad, control::FallAngle_rad, -1, 3, 1); StopControl(error); }
-            if (!(attitude_dt_s > 0.0f && attitude_dt_s <= control::MaximumControlGap_s)) { VEHICLE_ERROR(&error, ESP_ERR_TIMEOUT, attitude_gap, application, 0, attitude_dt_s, control::MaximumControlGap_s, -1, 3, 1); StopControl(error); }
+            if (!attitude.valid || !std::isfinite(pitch_rad) || !std::isfinite(pitch_rate_rad_s)) { VEHICLE_ERROR(&error, ESP_ERR_INVALID_RESPONSE, imu_filter,0); StopControl(error); }
+            if (balancing && std::abs(pitch_rad - control::PitchOffset_rad) > control::FallAngle_rad) { VEHICLE_ERROR(&error, ESP_ERR_INVALID_STATE, fall,0, pitch_rad-control::PitchOffset_rad, control::FallAngle_rad, -1, ErrorValue | ErrorThreshold); StopControl(error); }
+            if (!(attitude_dt_s > 0.0f && attitude_dt_s <= control::MaximumControlGap_s)) { VEHICLE_ERROR(&error, ESP_ERR_TIMEOUT, attitude_gap,0, attitude_dt_s, attitude_dt_s <= 0.0f ? 0.0f : control::MaximumControlGap_s, -1, ErrorValue | ErrorThreshold); StopControl(error); }
         }
         // 编码器仍每个电流周期采集。
         // 本轮外环同时使用最新IMU和最新轮速。
@@ -241,7 +245,7 @@ void ControlTask(void *argument)
                 pitch_rad, pitch_rate_rad_s, command.velocity_rad_s,
                 command.yaw_rate_rad_s, balancing, driving}, attitude_dt_s);
             cycle_timing.outer_us=esp_timer_get_time()-outer_start;
-            if (!output.valid) { VEHICLE_ERROR(&error, ESP_ERR_INVALID_RESPONSE, control_output, application, 0); StopControl(error); }
+            if (!output.valid) { VEHICLE_ERROR(&error, ESP_ERR_INVALID_RESPONSE, control_output,0); StopControl(error); }
         }
         // current保存本周期电流反馈。
         motor::CurrentFeedback current{};
@@ -252,7 +256,9 @@ void ControlTask(void *argument)
         current_saturated = current.sample_M0.voltage_saturated || current.sample_M1.voltage_saturated ||
             current.sample_M0.reference_limited || current.sample_M1.reference_limited;
         if (esp_timer_get_time() - cycle_time_us > static_cast<std::int64_t>(control::MaximumControlGap_s * 1.0e6f)) {
-            VEHICLE_ERROR(&error, ESP_ERR_TIMEOUT, control_gap, application, 0, esp_timer_get_time()-cycle_time_us, control::MaximumControlGap_s*1.0e6f, -1, 3, 1); StopControl(error);
+            // 上报值统一为秒，与本点其它调用点的口径一致。
+            const float elapsed_s = static_cast<float>(esp_timer_get_time()-cycle_time_us) * 1.0e-6f;
+            VEHICLE_ERROR(&error, ESP_ERR_TIMEOUT, control_gap,0, elapsed_s, control::MaximumControlGap_s, -1, ErrorValue | ErrorThreshold); StopControl(error);
         }
         ++sequence;
         cycle_timing.stage=control::ControlStage::publish;

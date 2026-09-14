@@ -74,9 +74,9 @@ esp_err_t Initialize(QueueHandle_t telemetry_queue, ErrorInfo *error)
         return ESP_OK;
     }
 
-    if (!telemetry_queue) { return VEHICLE_ERROR(error,ESP_ERR_INVALID_ARG,boot_resource,application,0); }
+    if (!telemetry_queue) { return VEHICLE_ERROR(error,ESP_ERR_INVALID_ARG,boot_resource,0); }
     incoming_queue=xQueueCreateStatic(1,sizeof(transport::Incoming),incoming_buffer,&incoming_storage);
-    if (!incoming_queue) { return VEHICLE_ERROR(error,ESP_ERR_NO_MEM,boot_resource,application,0); }
+    if (!incoming_queue) { return VEHICLE_ERROR(error,ESP_ERR_NO_MEM,boot_resource,0); }
 
     const transport::AccessHandlers handlers{&OnCommandAccess,&diagnostic::OnAccess};
     esp_err_t rc=transport::Create(handlers,incoming_queue,error);
@@ -109,7 +109,7 @@ void Run(QueueHandle_t command_queue)
         RemoteCommand parsed{};
         if (!ParseCommand(std::string_view(input.text,input.length_bytes),parsed)) {
             ErrorInfo error{};
-            VEHICLE_ERROR(&error,ESP_ERR_INVALID_ARG,ble_command,application,0,static_cast<float>(input.length_bytes),20,-1,3);
+            VEHICLE_ERROR(&error,ESP_ERR_INVALID_ARG,ble_command,0,static_cast<float>(input.length_bytes),20,-1, ErrorValue | ErrorThreshold);
             diagnostics::Record(error);
             // 无效输入不能让旧非零目标继续有效。
             const control::MotionCommand zero{};

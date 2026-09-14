@@ -33,12 +33,12 @@ bool CreateTaskQueues(TaskContext &context)
 esp_err_t StartBle(TaskContext &context, ErrorInfo *error)
 {
     if (!CreateTaskQueues(context) || !CreateBleTask(context)) {
-        return VEHICLE_ERROR(error,ESP_ERR_NO_MEM,boot_resource,application,0);
+        return VEHICLE_ERROR(error,ESP_ERR_NO_MEM,boot_resource,0);
     }
     // BleTask完成首次广播后才放行控制初始化。
     BleStartup startup{};
     if (xQueueReceive(context.ble_startup_queue,&startup,pdMS_TO_TICKS(ble::StartupWait_ms)) != pdTRUE) {
-        return VEHICLE_ERROR(error,ESP_ERR_TIMEOUT,ble_ready_timeout,application,0);
+        return VEHICLE_ERROR(error,ESP_ERR_TIMEOUT,ble_ready_timeout,0);
     }
     if (startup.result != ESP_OK) {
         if (error) { *error=startup.error; }
@@ -51,10 +51,10 @@ esp_err_t StartWifiTelemetry(TaskContext &context, ErrorInfo *error)
 {
     const esp_err_t result=wifi_telemetry::Initialize();
     if (result == ESP_OK && !CreateWifiTelemetryTask(context)) {
-        return VEHICLE_ERROR(error,ESP_ERR_NO_MEM,wifi_init,esp,ESP_ERR_NO_MEM);
+        return VEHICLE_ERROR(error,ESP_ERR_NO_MEM,wifi_init,ESP_ERR_NO_MEM);
     }
     if (result != ESP_OK) {
-        return VEHICLE_ERROR(error,result,wifi_init,esp,result);
+        return VEHICLE_ERROR(error,result,wifi_init,result);
     }
     return ESP_OK;
 }

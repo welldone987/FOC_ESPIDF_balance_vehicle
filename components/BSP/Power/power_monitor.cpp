@@ -43,11 +43,11 @@ esp_err_t Initialize(ErrorInfo *error)
         &adc_unit,
         &adc_channel);
     if (result != ESP_OK) {
-        return VEHICLE_ERROR(error, result, power_map, esp, result);
+        return VEHICLE_ERROR(error, result, power_map,result);
     }
 
     if (adc_unit != ADC_UNIT_2) {
-        return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, power_map, application, 0);
+        return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, power_map,0);
     }
 
     // ADC2只在Wi-Fi启动前的低频电源检查路径中使用。
@@ -57,7 +57,7 @@ esp_err_t Initialize(ErrorInfo *error)
 
     result = adc_oneshot_new_unit(&unit_config, &adc_handle);
     if (result != ESP_OK) {
-        return VEHICLE_ERROR(error, result, power_unit, esp, result);
+        return VEHICLE_ERROR(error, result, power_unit,result);
     }
 
     adc_oneshot_chan_cfg_t channel_config{};
@@ -66,7 +66,7 @@ esp_err_t Initialize(ErrorInfo *error)
 
     result = adc_oneshot_config_channel(adc_handle, adc_channel, &channel_config);
     if (result != ESP_OK) {
-        return VEHICLE_ERROR(error, result, power_channel, esp, result);
+        return VEHICLE_ERROR(error, result, power_channel,result);
     }
 
     // 线性校准把ADC原始码转换为分压节点电压，输出单位mV。
@@ -80,7 +80,7 @@ esp_err_t Initialize(ErrorInfo *error)
         &calibration_config,
         &calibration_handle);
     if (result != ESP_OK) {
-        return VEHICLE_ERROR(error, result, power_calibration, esp, result);
+        return VEHICLE_ERROR(error, result, power_calibration,result);
     }
 
     initialized = true;
@@ -90,20 +90,20 @@ esp_err_t Initialize(ErrorInfo *error)
 esp_err_t ReadBusVoltage(float *voltage_V, ErrorInfo *error)
 {
     if (!initialized || voltage_V == nullptr) {
-        return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, power_map, application, 0);
+        return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, power_map,0);
     }
 
     // raw_counts是ADC原始码，node_mv是校准后的VIN_MEA节点电压。
     int raw_counts = 0;
     esp_err_t result = adc_oneshot_read(adc_handle, adc_channel, &raw_counts);
     if (result != ESP_OK) {
-        return VEHICLE_ERROR(error, result, power_raw, esp, result);
+        return VEHICLE_ERROR(error, result, power_raw,result);
     }
 
     int node_mv = 0;
     result = adc_cali_raw_to_voltage(calibration_handle, raw_counts, &node_mv);
     if (result != ESP_OK) {
-        return VEHICLE_ERROR(error, result, power_mv, esp, result);
+        return VEHICLE_ERROR(error, result, power_mv,result);
     }
 
     // BatteryVoltageScale恢复分压前的母线电压，最终单位为V。
@@ -117,8 +117,8 @@ esp_err_t CheckStartupVoltage(ErrorInfo *error)
     float voltage_V{};
     esp_err_t result=ReadBusVoltage(&voltage_V,error);
     if (result == ESP_OK && voltage_V <= StartupUndervoltageThreshold_V) {
-        result=VEHICLE_ERROR(error,ESP_ERR_INVALID_STATE,undervoltage,application,0,
-            voltage_V,StartupUndervoltageThreshold_V,-1,3,-1);
+        result=VEHICLE_ERROR(error,ESP_ERR_INVALID_STATE,undervoltage,0,
+            voltage_V,StartupUndervoltageThreshold_V,-1, ErrorValue | ErrorThreshold);
     }
     return result;
 }

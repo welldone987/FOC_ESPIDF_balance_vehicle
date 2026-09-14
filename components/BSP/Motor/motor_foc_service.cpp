@@ -153,22 +153,22 @@ void WritePwm(BLDCDriver3PWM &driver, const PhaseDuty &duty)
 
 esp_err_t Initialize(ErrorInfo *error, BootReporter report)
 {
-    if (stopped) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, motor_state, application, 0); }
+    if (stopped) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, motor_state,0); }
     if (initialized) { return ESP_OK; }
     esp_err_t rc = PauseOutputs(error);
     if (rc != ESP_OK) { return rc; }
-    if (!CurrentHardwareVerified) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, motor_gate, application, 0); }
+    if (!CurrentHardwareVerified) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, motor_gate,0); }
     driver_M0.voltage_power_supply = driver_M1.voltage_power_supply = PwmBusReference_V;
     driver_M0.voltage_limit = driver_M1.voltage_limit = PwmBusReference_V;
     if (report) { report(static_cast<std::uint16_t>(ErrorPoint::driver_M0),"BEGIN"); }
     driver_ready_M0 = driver_M0.init(0) != 0;
-    if (!driver_ready_M0) { return VEHICLE_ERROR(error, ESP_FAIL, driver_M0, simplefoc, 0); }
+    if (!driver_ready_M0) { return VEHICLE_ERROR(error, ESP_FAIL, driver_M0,0); }
     driver_M0.disable();
     if (report) { report(static_cast<std::uint16_t>(ErrorPoint::driver_M0),"OK"); }
 
     if (report) { report(static_cast<std::uint16_t>(ErrorPoint::driver_M1),"BEGIN"); }
     driver_ready_M1 = driver_M1.init(1) != 0;
-    if (!driver_ready_M1) { return VEHICLE_ERROR(error, ESP_FAIL, driver_M1, simplefoc, 0); }
+    if (!driver_ready_M1) { return VEHICLE_ERROR(error, ESP_FAIL, driver_M1,0); }
     driver_M1.disable();
     if (report) { report(static_cast<std::uint16_t>(ErrorPoint::driver_M1),"OK"); }
 
@@ -186,24 +186,24 @@ esp_err_t Initialize(ErrorInfo *error, BootReporter report)
 
     if (report) { report(static_cast<std::uint16_t>(ErrorPoint::encoder_init_M1),"OK"); }
     rc = gpio_set_level(pins::motor_enable, 1);
-    if (rc != ESP_OK) { return VEHICLE_ERROR(error, rc, enable_gpio, esp, rc); }
+    if (rc != ESP_OK) { return VEHICLE_ERROR(error, rc, enable_gpio,rc); }
     if (report) { report(static_cast<std::uint16_t>(ErrorPoint::alignment_M1),"BEGIN"); }
     if (!AlignMotor(alignment_motor_M1, encoder_M1, driver_M1, state_M1)) {
-        if (!encoder_M1.healthy()) { return VEHICLE_ERROR(error, encoder_M1.raw_error(), encoder_read_M1, esp, encoder_M1.raw_error()); }
-        return VEHICLE_ERROR(error, ESP_FAIL, alignment_M1, simplefoc, 0);
+        if (!encoder_M1.healthy()) { return VEHICLE_ERROR(error, encoder_M1.raw_error(), encoder_read_M1,encoder_M1.raw_error()); }
+        return VEHICLE_ERROR(error, ESP_FAIL, alignment_M1,0);
     }
     if (report) { report(static_cast<std::uint16_t>(ErrorPoint::alignment_M1),"OK"); }
     if (report) { report(static_cast<std::uint16_t>(ErrorPoint::alignment_M0),"BEGIN"); }
     if (!AlignMotor(alignment_motor_M0, encoder_M0, driver_M0, state_M0)) {
-        if (!encoder_M0.healthy()) { return VEHICLE_ERROR(error, encoder_M0.raw_error(), encoder_read_M0, esp, encoder_M0.raw_error()); }
-        return VEHICLE_ERROR(error, ESP_FAIL, alignment_M0, simplefoc, 0);
+        if (!encoder_M0.healthy()) { return VEHICLE_ERROR(error, encoder_M0.raw_error(), encoder_read_M0,encoder_M0.raw_error()); }
+        return VEHICLE_ERROR(error, ESP_FAIL, alignment_M0,0);
     }
 
     if (report) { report(static_cast<std::uint16_t>(ErrorPoint::alignment_M0),"OK"); }
     rc = PauseOutputs(error);
     if (rc != ESP_OK) { return rc; }
-    if (!encoder_M0.Refresh()) { return VEHICLE_ERROR(error, encoder_M0.raw_error(), encoder_read_M0, esp, encoder_M0.raw_error()); }
-    if (!encoder_M1.Refresh()) { return VEHICLE_ERROR(error, encoder_M1.raw_error(), encoder_read_M1, esp, encoder_M1.raw_error()); }
+    if (!encoder_M0.Refresh()) { return VEHICLE_ERROR(error, encoder_M0.raw_error(), encoder_read_M0,encoder_M0.raw_error()); }
+    if (!encoder_M1.Refresh()) { return VEHICLE_ERROR(error, encoder_M1.raw_error(), encoder_read_M1,encoder_M1.raw_error()); }
     state_M0.previous_angle_rad = encoder_M0.angle_rad();
     state_M1.previous_angle_rad = encoder_M1.angle_rad();
     previous_encoder_us = 0;
@@ -214,7 +214,7 @@ esp_err_t Initialize(ErrorInfo *error, BootReporter report)
 esp_err_t ReadWheelState(WheelState *out, ErrorInfo *error)
 {
     wheel_sample_ready = false;
-    if (!out || !initialized || stopped) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, motor_state, application, 0); }
+    if (!out || !initialized || stopped) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, motor_state,0); }
     *out = {};
     const auto started_us = esp_timer_get_time();
     const bool first_sample = previous_encoder_us == 0;
@@ -222,10 +222,12 @@ esp_err_t ReadWheelState(WheelState *out, ErrorInfo *error)
     const float dt_s = first_sample ? ControlPeriod_us * 1.0e-6f :
         (started_us - previous_encoder_us) * 1.0e-6f;
     if (!(dt_s > 0.0f && dt_s <= MaximumControlGap_s)) {
-        return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, wheel_dt, application, 0, dt_s, MaximumControlGap_s, -1, 3);
+        // threshold取实际被违反的界限：dt<=0时是下界0，否则是上界。
+        return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, wheel_dt,0, dt_s,
+            dt_s <= 0.0f ? 0.0f : MaximumControlGap_s, -1, ErrorValue | ErrorThreshold);
     }
-    if (!encoder_M0.Refresh()) { return VEHICLE_ERROR(error, encoder_M0.raw_error(), encoder_read_M0, esp, encoder_M0.raw_error()); }
-    if (!encoder_M1.Refresh()) { return VEHICLE_ERROR(error, encoder_M1.raw_error(), encoder_read_M1, esp, encoder_M1.raw_error()); }
+    if (!encoder_M0.Refresh()) { return VEHICLE_ERROR(error, encoder_M0.raw_error(), encoder_read_M0,encoder_M0.raw_error()); }
+    if (!encoder_M1.Refresh()) { return VEHICLE_ERROR(error, encoder_M1.raw_error(), encoder_read_M1,encoder_M1.raw_error()); }
     // 两台电机的轮速在状态副本上计算，成功后一起提交。
     auto next_state_M0 = state_M0;
     auto next_state_M1 = state_M1;
@@ -236,10 +238,10 @@ esp_err_t ReadWheelState(WheelState *out, ErrorInfo *error)
     const float velocity_M0_rad_s = UpdateWheel(encoder_M0, next_state_M0, ForwardSign_M0, dt_s);
     const float velocity_M1_rad_s = UpdateWheel(encoder_M1, next_state_M1, ForwardSign_M1, dt_s);
     if (!std::isfinite(velocity_M0_rad_s) || !std::isfinite(velocity_M1_rad_s)) {
-        return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, wheel_invalid, application, 0);
+        return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, wheel_invalid,0);
     }
     if (esp_timer_get_time() - started_us > encoder::ReadMaxDuration_us) {
-        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, wheel_age, application, 0, esp_timer_get_time()-started_us, encoder::ReadMaxDuration_us, -1, 3, 1);
+        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, wheel_age,0, esp_timer_get_time()-started_us, encoder::ReadMaxDuration_us, -1, ErrorValue | ErrorThreshold);
     }
     state_M0=next_state_M0; state_M1=next_state_M1;
     encoder_started_us=started_us; previous_encoder_us=started_us;
@@ -255,11 +257,11 @@ esp_err_t RunCurrentControl(const CurrentCommand &command, CurrentFeedback *out,
     CurrentTiming local{};
     auto &trace = timing ? *timing : local;
     trace = {};
-    if (!out || !initialized || stopped || !wheel_sample_ready) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, motor_state, application, 0); }
+    if (!out || !initialized || stopped || !wheel_sample_ready) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, motor_state,0); }
     *out = {};
     wheel_sample_ready = false;
     if (!std::isfinite(command.target_M0_A) || !std::isfinite(command.target_M1_A)) {
-        return VEHICLE_ERROR(error, ESP_ERR_INVALID_ARG, command_invalid, application, 0);
+        return VEHICLE_ERROR(error, ESP_ERR_INVALID_ARG, command_invalid,0);
     }
     // sample保存本周期四路ADC采样的相电流和采样时刻。
     current_sensor::Sample sample{};
@@ -274,7 +276,9 @@ esp_err_t RunCurrentControl(const CurrentCommand &command, CurrentFeedback *out,
     const float dt_s = previous_current_us == 0 ? ControlPeriod_us * 1.0e-6f :
         (sample.started_us - previous_current_us) * 1.0e-6f;
     if (!(dt_s > 0.0f && dt_s <= MaximumControlGap_s)) {
-        return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, current_dt, application, 0, dt_s, MaximumControlGap_s, -1, 3);
+        // threshold取实际被违反的界限：dt<=0时是下界0，否则是上界。
+        return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, current_dt,0, dt_s,
+            dt_s <= 0.0f ? 0.0f : MaximumControlGap_s, -1, ErrorValue | ErrorThreshold);
     }
     // 两台电机的电流计算在状态副本上进行，成功后一起提交。
     auto next_state_M0=state_M0; auto next_state_M1=state_M1;
@@ -284,20 +288,20 @@ esp_err_t RunCurrentControl(const CurrentCommand &command, CurrentFeedback *out,
         ForwardSign_M0, dt_s, duty_M0);
     const auto sample_M1 = CalculateCurrent(next_state_M1, sample.phase_currents[1], command.target_M1_A,
         ForwardSign_M1, dt_s, duty_M1);
-    if (!duty_M0.valid) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, pi_svpwm_M0, application, 0); }
-    if (!duty_M1.valid) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, pi_svpwm_M1, application, 0); }
+    if (!duty_M0.valid) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, pi_svpwm_M0,0); }
+    if (!duty_M1.valid) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, pi_svpwm_M1,0); }
     auto checked_us=esp_timer_get_time();
     trace.math_us=checked_us-math_started_us;
     trace.stage=CurrentStage::before_pwm;
     trace.encoder_age_us=checked_us-encoder_started_us;
     trace.current_age_us=checked_us-sample.started_us;
     if (trace.encoder_age_us > encoder::OutputMaxAge_us) {
-        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, output_age, application, 0,
-            trace.encoder_age_us, encoder::OutputMaxAge_us, -1, 3, 1);
+        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, output_age,0,
+            trace.encoder_age_us, encoder::OutputMaxAge_us, -1, ErrorValue | ErrorThreshold);
     }
     if (trace.current_age_us > CurrentOutputMaxAge_us) {
-        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_output_age, application, 0,
-            trace.current_age_us, CurrentOutputMaxAge_us, -1, 3, 1);
+        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_output_age,0,
+            trace.current_age_us, CurrentOutputMaxAge_us, -1, ErrorValue | ErrorThreshold);
     }
     trace.stage=CurrentStage::pwm;
     const auto pwm_started_us=esp_timer_get_time();
@@ -308,17 +312,17 @@ esp_err_t RunCurrentControl(const CurrentCommand &command, CurrentFeedback *out,
     trace.encoder_age_us=checked_us-encoder_started_us;
     trace.current_age_us=checked_us-sample.started_us;
     if (trace.encoder_age_us > encoder::OutputMaxAge_us) {
-        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, output_age, application, 0,
-            trace.encoder_age_us, encoder::OutputMaxAge_us, -1, 3, 1);
+        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, output_age,0,
+            trace.encoder_age_us, encoder::OutputMaxAge_us, -1, ErrorValue | ErrorThreshold);
     }
     if (trace.current_age_us > CurrentOutputMaxAge_us) {
-        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_output_age, application, 0,
-            trace.current_age_us, CurrentOutputMaxAge_us, -1, 3, 1);
+        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_output_age,0,
+            trace.current_age_us, CurrentOutputMaxAge_us, -1, ErrorValue | ErrorThreshold);
     }
     trace.stage=CurrentStage::enable;
     if (!outputs_enabled) {
         const auto enabled = gpio_set_level(pins::motor_enable, 1);
-        if (enabled != ESP_OK) { return VEHICLE_ERROR(error, enabled, enable_gpio, esp, enabled); }
+        if (enabled != ESP_OK) { return VEHICLE_ERROR(error, enabled, enable_gpio,enabled); }
         outputs_enabled=true;
     }
     state_M0=next_state_M0; state_M1=next_state_M1; previous_current_us=sample.started_us;
@@ -337,8 +341,8 @@ esp_err_t InhibitOutputs(ErrorInfo *error)
     if (driver_ready_M0) { driver_M0.disable(); }
     if (driver_ready_M1) { driver_M1.disable(); }
     outputs_enabled=false;
-    if (level != ESP_OK) { return VEHICLE_ERROR(error, level, disable_gpio, esp, level); }
-    if (direction != ESP_OK) { return VEHICLE_ERROR(error, direction, disable_gpio, esp, direction); }
+    if (level != ESP_OK) { return VEHICLE_ERROR(error, level, disable_gpio,level); }
+    if (direction != ESP_OK) { return VEHICLE_ERROR(error, direction, disable_gpio,direction); }
     return ESP_OK;
 }
 esp_err_t PauseOutputs(ErrorInfo *error)

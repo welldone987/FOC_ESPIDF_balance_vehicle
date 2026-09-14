@@ -27,13 +27,13 @@ esp_err_t CheckedEncoder::Initialize(ErrorInfo *error, ErrorPoint point)
     }
     if (!device_) {
         healthy_ = false;
-        return ErrorAt(error, ESP_FAIL, point, ErrorDomain::application, 0,
-            __FILE__, __func__, __LINE__);
+        return ErrorAt(error, ESP_FAIL, point, 0,
+            __FILE__, __LINE__);
     }
     Sensor::init();
     if (!healthy_) {
-        return ErrorAt(error, raw_error_, point, ErrorDomain::esp, raw_error_,
-            __FILE__, __func__, __LINE__);
+        return ErrorAt(error, raw_error_, point, raw_error_,
+            __FILE__, __LINE__);
     }
     return ESP_OK;
 }

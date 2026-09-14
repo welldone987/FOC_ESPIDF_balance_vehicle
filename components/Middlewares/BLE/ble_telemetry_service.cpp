@@ -45,7 +45,7 @@ void SendTelemetry(ble_npl_event *)
             const auto now=esp_timer_get_time();
             if (!last_notify_error_us || now-last_notify_error_us>=NotifyErrorThrottle_us) {
                 ErrorInfo error{};
-                VEHICLE_ERROR(&error,ESP_FAIL,ble_notify,nimble,rc,static_cast<float>(notify_failures),0,-1,1);
+                VEHICLE_ERROR(&error,ESP_FAIL,ble_notify,rc,static_cast<float>(notify_failures),0,-1, ErrorValue);
                 diagnostics::Record(error);
                 last_notify_error_us=now;
             }

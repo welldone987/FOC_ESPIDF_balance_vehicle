@@ -109,8 +109,9 @@ int GapEvent(ble_gap_event *event, void *)
         {
             ErrorInfo error{};
             const auto &conn=event->disconnect.conn;
-            VEHICLE_ERROR(&error,ESP_FAIL,ble_disconnect,nimble,event->disconnect.reason,
-                conn.conn_itvl*1.25f,conn.supervision_timeout*10.0f,conn.conn_latency,7);
+            // channel不承载连接参数；保留连接间隔与监督超时两项诊断值。
+            VEHICLE_ERROR(&error,ESP_FAIL,ble_disconnect,event->disconnect.reason,
+                conn.conn_itvl*1.25f,conn.supervision_timeout*10.0f,-1,ErrorValue | ErrorThreshold);
             diagnostics::Record(error);
         }
         connection_handle = BLE_HS_CONN_HANDLE_NONE;
@@ -158,7 +159,7 @@ int StartAdvertising(ErrorInfo *error)
 
     int rc = ble_gap_adv_set_fields(&advertising_fields);
     if (rc != 0) {
-        VEHICLE_ERROR(error,ESP_FAIL,ble_adv_fields,nimble,rc);
+        VEHICLE_ERROR(error,ESP_FAIL,ble_adv_fields,rc);
         RememberBle(rc,ErrorPoint::ble_adv_fields);
         return rc;
     }
@@ -170,7 +171,7 @@ int StartAdvertising(ErrorInfo *error)
 
     rc = ble_gap_adv_rsp_set_fields(&scan_response_fields);
     if (rc != 0) {
-        VEHICLE_ERROR(error,ESP_FAIL,ble_scan_fields,nimble,rc);
+        VEHICLE_ERROR(error,ESP_FAIL,ble_scan_fields,rc);
         RememberBle(rc,ErrorPoint::ble_scan_fields);
         return rc;
     }
@@ -182,7 +183,7 @@ int StartAdvertising(ErrorInfo *error)
     rc = ble_gap_adv_start(
         own_address_type, nullptr, BLE_HS_FOREVER, &parameters, GapEvent, nullptr);
     if (rc == BLE_HS_EALREADY) { rc=0; }
-    if (rc) { VEHICLE_ERROR(error,ESP_FAIL,ble_advertise,nimble,rc); }
+    if (rc) { VEHICLE_ERROR(error,ESP_FAIL,ble_advertise,rc); }
     RememberBle(rc,ErrorPoint::ble_advertise);
     return rc;
 }
@@ -203,11 +204,11 @@ void OnSync()
 {
     ErrorInfo sync_error{};
     int rc = ble_hs_id_infer_auto(0, &own_address_type);
-    if (rc) { VEHICLE_ERROR(&sync_error,ESP_FAIL,ble_address,nimble,rc); }
+    if (rc) { VEHICLE_ERROR(&sync_error,ESP_FAIL,ble_address,rc); }
     else { rc=StartAdvertising(&sync_error); }
     if (!rc && lifecycle_hooks.synced) {
         rc=lifecycle_hooks.synced();
-        if (rc) { VEHICLE_ERROR(&sync_error,ESP_FAIL,ble_notify,nimble,rc); }
+        if (rc) { VEHICLE_ERROR(&sync_error,ESP_FAIL,ble_notify,rc); }
     }
     if (ready.load(std::memory_order_acquire) == 0) {
         if (rc != 0) { ready_error=sync_error; }
@@ -228,13 +229,13 @@ void HostTask(void *)
 esp_err_t Create(const AccessHandlers &handlers, QueueHandle_t queue, ErrorInfo *error)
 {
     if (created) { return ESP_OK; }
-    if (!queue) { return VEHICLE_ERROR(error,ESP_ERR_INVALID_ARG,boot_resource,application,0); }
+    if (!queue) { return VEHICLE_ERROR(error,ESP_ERR_INVALID_ARG,boot_resource,0); }
     incoming_queue=queue;
     access_handlers=handlers;
 
     const esp_err_t nimble_result = nimble_port_init();
     if (nimble_result != ESP_OK) {
-        return VEHICLE_ERROR(error, nimble_result, ble_init, esp, nimble_result);
+        return VEHICLE_ERROR(error, nimble_result, ble_init,nimble_result);
     }
 
     ble_svc_gap_init();
@@ -256,17 +257,17 @@ esp_err_t Create(const AccessHandlers &handlers, QueueHandle_t queue, ErrorInfo 
 
     int rc = ble_svc_gap_device_name_set(DeviceName);
     if (rc != 0) {
-        return VEHICLE_ERROR(error, ESP_FAIL, ble_name, nimble, rc);
+        return VEHICLE_ERROR(error, ESP_FAIL, ble_name,rc);
     }
 
     rc = ble_gatts_count_cfg(services);
     if (rc != 0) {
-        return VEHICLE_ERROR(error, ESP_FAIL, ble_count, nimble, rc);
+        return VEHICLE_ERROR(error, ESP_FAIL, ble_count,rc);
     }
 
     rc = ble_gatts_add_svcs(services);
     if (rc != 0) {
-        return VEHICLE_ERROR(error, ESP_FAIL, ble_services, nimble, rc);
+        return VEHICLE_ERROR(error, ESP_FAIL, ble_services,rc);
     }
 
     ble_hs_cfg.reset_cb = OnReset;
@@ -286,7 +287,7 @@ esp_err_t Start(ErrorInfo *error)
     const auto deadline_us=esp_timer_get_time()+ReadyTimeout_us;
     while (ready.load(std::memory_order_acquire) == 0 && esp_timer_get_time()<deadline_us) { vTaskDelay(pdMS_TO_TICKS(10)); }
     const int state=ready.load(std::memory_order_acquire);
-    if (state == 0) { return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, ble_ready_timeout, application, 0); }
+    if (state == 0) { return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, ble_ready_timeout,0); }
     if (state < 0) { if (error) { *error=ready_error; } return ESP_FAIL; }
     return ESP_OK;
 }
@@ -309,7 +310,7 @@ void RememberBle(int rc, ErrorPoint point)
 {
     if (!rc) { return; }
     ErrorInfo error{};
-    ErrorAt(&error,ESP_FAIL,point,ErrorDomain::nimble,rc,__FILE__,__func__,__LINE__);
+    ErrorAt(&error,ESP_FAIL,point,rc,__FILE__,__LINE__);
     diagnostics::Record(error);
 }
 

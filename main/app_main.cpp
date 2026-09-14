@@ -44,7 +44,7 @@ extern "C" void app_main(void)
     if (!Finish(BootStep::voltage,vehicle::power::CheckStartupVoltage(&error),error)) { return; }
     vehicle::diagnostics::Boot(BootStep::nvs,"BEGIN");
     rc=nvs_flash_init();
-    if (rc != ESP_OK) { VEHICLE_ERROR(&error,rc,nvs,esp,rc); }
+    if (rc != ESP_OK) { VEHICLE_ERROR(&error,rc,nvs,rc); }
     if (!Finish(BootStep::nvs,rc,error)) { return; }
     vehicle::diagnostics::Boot(BootStep::ble,"BEGIN");
     if (!Finish(BootStep::ble,vehicle::freertos_tasks::StartBle(context,&error),error)) { return; }
@@ -53,7 +53,7 @@ extern "C" void app_main(void)
     Finish(BootStep::wifi,vehicle::freertos_tasks::StartWifiTelemetry(context,&error),error,false);
     const auto task=vehicle::freertos_tasks::CreateControlTask(context);
     if (!task) {
-        VEHICLE_ERROR(&error,ESP_ERR_NO_MEM,boot_resource,application,0);
+        VEHICLE_ERROR(&error,ESP_ERR_NO_MEM,boot_resource,0);
         Finish(BootStep::timer,ESP_ERR_NO_MEM,error);
         return;
     }

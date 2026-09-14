@@ -31,6 +31,13 @@ const char *CurrentStageName(motor::CurrentStage stage)
     return index < sizeof(names)/sizeof(names[0]) ? names[index] : "UNKNOWN";
 }
 
+// FormatNumber()把有效数值按"%g"加单位后缀写入缓冲；无效时写NULL。
+void FormatNumber(char *out, std::size_t capacity, float number, bool valid, const char *unit)
+{
+    if (!valid) { std::strcpy(out,"NULL"); return; }
+    std::snprintf(out,capacity,"%g%s",static_cast<double>(number),unit);
+}
+
 // PrintTiming()仅在低频观察者或输出禁能后的故障分支格式化控制现场。
 void PrintTiming(const control::ControlTiming &timing)
 {
@@ -51,8 +58,12 @@ void Initialize() { portENTER_CRITICAL(&lock); g_diag_crash = {}; portEXIT_CRITI
 
 void Boot(BootStep step, const char *state, esp_err_t rc)
 {
-    portENTER_CRITICAL(&lock); g_diag_crash.boot_step=step; portEXIT_CRITICAL(&lock);
     ESP_LOGI("boot", "boot_step=%u %s rc=%s (0x%x)", static_cast<unsigned>(step), state, esp_err_to_name(rc), rc);
+}
+
+void BootSubstep(std::uint16_t point, const char *state)
+{
+    ESP_LOGI("boot", "boot_substep=0x%03x state=%s", static_cast<unsigned>(point), state);
 }
 
 void Record(const ErrorInfo &error, bool fatal)
@@ -77,19 +88,27 @@ int FormatEvent(const Event &event, char *buffer, std::size_t capacity)
     if (base) { file=base+1; }
     base=std::strrchr(file,'\\');
     if (base) { file=base+1; }
+    // raw仅在非0且不同于code时输出，其余情况占位NULL。
+    char raw[16]{};
+    if (e.raw_code != 0 && e.raw_code != static_cast<std::int32_t>(e.code)) {
+        std::snprintf(raw,sizeof(raw),"%ld",static_cast<long>(e.raw_code));
+    } else { std::strcpy(raw,"NULL"); }
+    // value/threshold按valid_fields位输出，并追加该点的单位后缀。
+    const char *unit=PointUnit(e.point_id);
+    char value[32]{}, threshold[32]{}, channel[16]{};
+    FormatNumber(value,sizeof(value),e.value,(e.valid_fields & ErrorValue)!=0,unit);
+    FormatNumber(threshold,sizeof(threshold),e.threshold,(e.valid_fields & ErrorThreshold)!=0,unit);
+    if (e.channel >= 0) { std::snprintf(channel,sizeof(channel),"%d",static_cast<int>(e.channel)); }
+    else { std::strcpy(channel,"NULL"); }
     return std::snprintf(buffer,capacity,
-        "seq=%lu flags=%u point=0x%04x code=%ld name=%s domain=%u raw=%ld file=%s line=%lu function=%s valid=%u value=%g threshold=%g channel=%d comparison=%d",
+        "seq=%lu flags=%u point=0x%04x code=%ld(%s) raw=%s at=%s:%lu value=%s threshold=%s ch=%s",
         static_cast<unsigned long>(event.event_seq),event.flags,static_cast<unsigned>(e.point_id),
-        static_cast<long>(e.code),esp_err_to_name(e.code),static_cast<unsigned>(e.domain),static_cast<long>(e.raw_code),
-        file,static_cast<unsigned long>(e.line),e.function ? e.function : "?",e.valid_fields,
-        static_cast<double>(e.value),static_cast<double>(e.threshold),e.channel,e.comparison);
+        static_cast<long>(e.code),esp_err_to_name(e.code),
+        raw,file,static_cast<unsigned long>(e.line),value,threshold,channel);
 }
 
 void CommitControlSnapshot(const ControlSnapshot &snapshot)
 { portENTER_CRITICAL(&lock); g_diag_crash.last_control=snapshot; portEXIT_CRITICAL(&lock); }
-
-void CompleteBoot()
-{ portENTER_CRITICAL(&lock); g_diag_crash.boot_complete=true; portEXIT_CRITICAL(&lock); }
 
 void CommitControlTiming(const control::ControlTiming &timing)
 { portENTER_CRITICAL(&lock); CommitTiming(g_diag_crash,timing); portEXIT_CRITICAL(&lock); }
@@ -101,11 +120,11 @@ void PrintControlFault(const ErrorInfo &error)
     portENTER_CRITICAL(&lock);
     timing=g_diag_crash.fault_timing; previous=g_diag_crash.fault_control;
     portEXIT_CRITICAL(&lock);
-    ESP_LOGE("control_diag","CONTROL_FAULT point=%u code=%s (0x%x) domain=%u raw=%ld file=%s:%lu function=%s",
-        static_cast<unsigned>(error.point_id),esp_err_to_name(error.code),error.code,static_cast<unsigned>(error.domain),
-        static_cast<long>(error.raw_code),error.file ? error.file : "?",static_cast<unsigned long>(error.line),error.function ? error.function : "?");
-    ESP_LOGE("control_diag","CONTROL_ERROR_FIELDS valid=0x%x value=%g threshold=%g channel=%d comparison=%d",
-        error.valid_fields,static_cast<double>(error.value),static_cast<double>(error.threshold),error.channel,error.comparison);
+    // 与BLE诊断特征共用同一渲染器，串口不再维护第二套字段。
+    char text[DiagnosticTextCapacity]{};
+    const Event fault_event{0U,error,3U};
+    FormatEvent(fault_event,text,sizeof(text));
+    ESP_LOGE("control_diag","CONTROL_FAULT %s",text);
     PrintTiming(timing);
     ESP_LOGI("control_diag","CONTROL_LAST_VALID valid=%u seq=%lu pitch_deg=%g velocity_M0_rad_s=%g velocity_M1_rad_s=%g target_M0_A=%g target_M1_A=%g",
         previous.valid,static_cast<unsigned long>(previous.sequence),static_cast<double>(previous.pitch_deg),

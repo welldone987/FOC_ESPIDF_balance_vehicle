@@ -40,15 +40,15 @@ esp_err_t ReadMillivolts(std::array<int, 4> &values_mv, ErrorInfo *error)
     for (unsigned i = 0; i < values_mv.size(); ++i) {
         int raw_counts = 0;
         esp_err_t result = adc_oneshot_read(adc, channels[i], &raw_counts);
-        if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_raw, esp, result, raw_counts, 0, i, 5); }
+        if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_raw,result, raw_counts, 0, i, ErrorValue | ErrorChannel); }
         result = adc_cali_raw_to_voltage(calibration, raw_counts, &values_mv[i]);
-        if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_mv, esp, result, raw_counts, 0, i, 5); }
+        if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_mv,result, raw_counts, 0, i, ErrorValue | ErrorChannel); }
         if (values_mv[i] < AdcMin_mV || values_mv[i] > AdcMax_mV) {
-            return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, current_range, application, 0, values_mv[i], values_mv[i] < AdcMin_mV ? AdcMin_mV : AdcMax_mV, i, 7);
+            return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, current_range,0, values_mv[i], values_mv[i] < AdcMin_mV ? AdcMin_mV : AdcMax_mV, i, ErrorValue | ErrorThreshold | ErrorChannel);
         }
     }
     return esp_timer_get_time() - sample_started_us <= ReadMaxDuration_us
-        ? ESP_OK : VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_timeout, application, 0, esp_timer_get_time()-sample_started_us, ReadMaxDuration_us, -1, 3, 1);
+        ? ESP_OK : VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_timeout,0, esp_timer_get_time()-sample_started_us, ReadMaxDuration_us, -1, ErrorValue | ErrorThreshold);
 }
 
 } // namespace
@@ -67,7 +67,7 @@ esp_err_t Initialize(ErrorInfo *error)
     // 四路采样引脚全部属于ADC1。
     unit.unit_id = ADC_UNIT_1;
     esp_err_t result = adc_oneshot_new_unit(&unit, &adc);
-    if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_unit, esp, result); }
+    if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_unit,result); }
     adc_oneshot_chan_cfg_t channel{};
     // 四路通道统一使用12dB衰减和12位分辨率。
     channel.atten = ADC_ATTEN_DB_12;
@@ -75,9 +75,9 @@ esp_err_t Initialize(ErrorInfo *error)
     for (unsigned i = 0; i < channels.size(); ++i) {
         adc_unit_t actual_unit{};
         result = adc_oneshot_io_to_channel(current_pins[i], &actual_unit, &channels[i]);
-        if (result != ESP_OK || actual_unit != ADC_UNIT_1) { return VEHICLE_ERROR(error, result != ESP_OK ? result : ESP_ERR_INVALID_ARG, current_map, esp, result, 0, 0, i, 4); }
+        if (result != ESP_OK || actual_unit != ADC_UNIT_1) { return VEHICLE_ERROR(error, result != ESP_OK ? result : ESP_ERR_INVALID_ARG, current_map,result, 0, 0, i, ErrorChannel); }
         result = adc_oneshot_config_channel(adc, channels[i], &channel);
-        if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_channel, esp, result, 0, 0, i, 4); }
+        if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_channel,result, 0, 0, i, ErrorChannel); }
     }
     adc_cali_line_fitting_config_t cal{};
     cal.unit_id = ADC_UNIT_1;
@@ -85,7 +85,7 @@ esp_err_t Initialize(ErrorInfo *error)
     cal.bitwidth = ADC_BITWIDTH_12;
     cal.default_vref = AdcDefaultVref_mV;
     result = adc_cali_create_scheme_line_fitting(&cal, &calibration);
-    if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_calibration, esp, result); }
+    if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_calibration,result); }
     // min_mv和max_mv记录校准期间逐路电压极值，用于检查峰峰噪声。
     std::array<int, 4> min_mv{};
     std::array<int, 4> max_mv{};
@@ -108,11 +108,11 @@ esp_err_t Initialize(ErrorInfo *error)
         offsets_mv[i] /= OffsetSamples;
         if (offsets_mv[i] < OffsetMin_mV ||
             offsets_mv[i] > OffsetMax_mV) {
-            return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, offset_mean, application, 0, offsets_mv[i], offsets_mv[i] < OffsetMin_mV ? OffsetMin_mV : OffsetMax_mV, i, 7);
+            return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, offset_mean,0, offsets_mv[i], offsets_mv[i] < OffsetMin_mV ? OffsetMin_mV : OffsetMax_mV, i, ErrorValue | ErrorThreshold | ErrorChannel);
         }
     }
     for (unsigned i=0; i<offsets_mv.size(); ++i) {
-        if (max_mv[i]-min_mv[i] > OffsetNoise_mV) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, offset_noise, application, 0, max_mv[i]-min_mv[i], OffsetNoise_mV, i, 7, 1); }
+        if (max_mv[i]-min_mv[i] > OffsetNoise_mV) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, offset_noise,0, max_mv[i]-min_mv[i], OffsetNoise_mV, i, ErrorValue | ErrorThreshold | ErrorChannel); }
     }
     ready=true;
     return ESP_OK;
@@ -121,9 +121,9 @@ esp_err_t Initialize(ErrorInfo *error)
 esp_err_t Read(Sample *out, ErrorInfo *error)
 {
     std::array<int, 4> phase_mv{};
-    if (!out) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_ARG, current_raw, application, 0); }
+    if (!out) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_ARG, current_raw,0); }
     *out = {};
-    if (!ready) { return VEHICLE_ERROR(error,ESP_ERR_INVALID_STATE,current_state,application,0); }
+    if (!ready) { return VEHICLE_ERROR(error,ESP_ERR_INVALID_STATE,current_state,0); }
     const esp_err_t rc = ReadMillivolts(phase_mv, error);
     if (rc != ESP_OK) { return rc; }
     // currents_A把四路mV减去零偏后换算为相电流，单位A。
@@ -132,12 +132,12 @@ esp_err_t Read(Sample *out, ErrorInfo *error)
     for (unsigned i = 0; i < currents_A.size(); ++i) {
         currents_A[i] = (phase_mv[i] - offsets_mv[i]) * 0.001f * Polarity /
             (Shunt_Ohm * AmplifierGain);
-        if (!std::isfinite(currents_A[i]) || std::abs(currents_A[i]) > PhaseTrip_A) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, phase_limit, application, 0, currents_A[i], PhaseTrip_A, i, 7, 1); }
+        if (!std::isfinite(currents_A[i]) || std::abs(currents_A[i]) > PhaseTrip_A) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, phase_limit,0, currents_A[i], PhaseTrip_A, i, ErrorValue | ErrorThreshold | ErrorChannel); }
     }
     for (unsigned i = 0; i < phase_currents.size(); ++i) {
         const float measured_a_A = currents_A[2 * i];
         const float measured_b_A = currents_A[2 * i + 1];
-        if (std::abs(measured_a_A + measured_b_A) > PhaseTrip_A) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, reconstructed_limit, application, 0, -measured_a_A-measured_b_A, PhaseTrip_A, i, 7, 1); }
+        if (std::abs(measured_a_A + measured_b_A) > PhaseTrip_A) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, reconstructed_limit,0, -measured_a_A-measured_b_A, PhaseTrip_A, i, ErrorValue | ErrorThreshold | ErrorChannel); }
         // 两相测量重构第三相，仅用于保护，不建立Id环。
         phase_currents[i] = {measured_a_A, measured_b_A, -measured_a_A - measured_b_A};
     }

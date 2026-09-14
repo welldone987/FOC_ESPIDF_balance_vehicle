@@ -67,27 +67,27 @@ std::int64_t previous_sample_us = 0;
 esp_err_t ReadRegister(std::uint8_t address, std::uint8_t *register_value, ErrorInfo *error)
 {
     if (device == nullptr || register_value == nullptr) {
-        return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, imu_state, application, 0);
+        return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, imu_state,0);
     }
     const esp_err_t rc = i2c_bus_read_byte(device, address, register_value);
-    return rc == ESP_OK ? ESP_OK : VEHICLE_ERROR(error, rc, imu_read, esp, rc, address, 0, -1, 1);
+    return rc == ESP_OK ? ESP_OK : VEHICLE_ERROR(error, rc, imu_read,rc, address, 0, -1, ErrorValue);
 }
 
 // ReadRegisters()从连续寄存器地址读取一段原始数据。
 esp_err_t ReadRegisters(std::uint8_t address, std::uint8_t *data_bytes, std::size_t length_bytes, ErrorInfo *error)
 {
     if (device == nullptr || data_bytes == nullptr || length_bytes == 0U) {
-        return VEHICLE_ERROR(error, ESP_ERR_INVALID_ARG, imu_state, application, 0);
+        return VEHICLE_ERROR(error, ESP_ERR_INVALID_ARG, imu_state,0);
     }
     const esp_err_t rc = i2c_bus_read_bytes(device, address, length_bytes, data_bytes);
-    return rc == ESP_OK ? ESP_OK : VEHICLE_ERROR(error, rc, imu_read, esp, rc, address, 0, -1, 1);
+    return rc == ESP_OK ? ESP_OK : VEHICLE_ERROR(error, rc, imu_read,rc, address, 0, -1, ErrorValue);
 }
 
 // WriteRegister()向BMI160指定寄存器写入一个字节。
 esp_err_t WriteRegister(std::uint8_t address, std::uint8_t register_value, ErrorInfo *error)
 {
     if (device == nullptr) {
-        return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, imu_state, application, 0);
+        return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, imu_state,0);
     }
     const esp_err_t rc = i2c_bus_write_byte(device, address, register_value);
     if (rc == ESP_OK) { return ESP_OK; }
@@ -106,7 +106,7 @@ esp_err_t WriteRegister(std::uint8_t address, std::uint8_t register_value, Error
     case RegOffset6: point=ErrorPoint::imu_foc_offset; break;
     default: break;
     }
-    return ErrorAt(error,rc,point,ErrorDomain::esp,rc,__FILE__,__func__,__LINE__,register_value,0,address,5);
+    return ErrorAt(error,rc,point,rc,__FILE__,__LINE__,register_value,0,address,ErrorValue | ErrorChannel);
 }
 
 // SignedWord()按BMI160低字节在前的格式把两个字节还原为有符号计数。
@@ -133,7 +133,7 @@ esp_err_t WaitForPmuNormal(ErrorInfo *error)
         }
         vTaskDelay(pdMS_TO_TICKS(1U));
     }
-    return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, imu_pmu_timeout, application, 0);
+    return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, imu_pmu_timeout,0);
 }
 
 // CalibrateGyroOffset(ErrorInfo *error)启动BMI160陀螺仪FOC并保存硬件偏置使能位。
@@ -169,7 +169,7 @@ esp_err_t CalibrateGyroOffset(ErrorInfo *error)
     }
 
     if ((register_value & FocReady) == 0U) {
-        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, imu_foc_timeout, application, 0);
+        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, imu_foc_timeout,0);
     }
 
     result = ReadRegister(RegOffset6, &register_value, error);
@@ -200,18 +200,18 @@ esp_err_t Initialize(ErrorInfo *error)
 
     bus = i2c_bus_create(I2C_NUM_0, &i2c_config);
     if (bus == nullptr) {
-        return VEHICLE_ERROR(error, ESP_FAIL, imu_bus, application, 0);
+        return VEHICLE_ERROR(error, ESP_FAIL, imu_bus,0);
     }
 
     device = i2c_bus_device_create(bus, Address, 0U);
     if (device == nullptr) {
-        return VEHICLE_ERROR(error, ESP_FAIL, imu_device, application, 0);
+        return VEHICLE_ERROR(error, ESP_FAIL, imu_device,0);
     }
 
     std::uint8_t register_value = 0U;
     esp_err_t result = ReadRegister(RegChipId, &register_value, error);
     if (result != ESP_OK || register_value != ChipId) {
-        return result != ESP_OK ? result : VEHICLE_ERROR(error, ESP_ERR_NOT_FOUND, imu_id, application, 0, register_value, ChipId, -1, 3);
+        return result != ESP_OK ? result : VEHICLE_ERROR(error, ESP_ERR_NOT_FOUND, imu_id,0, register_value, ChipId, -1, ErrorValue | ErrorThreshold);
     }
 
     result = WriteRegister(RegCmd, CmdSoftReset, error);
@@ -288,7 +288,7 @@ void ResetEstimator()
 
 esp_err_t ReadAttitude(AttitudeSample *out, ErrorInfo *error)
 {
-    if (!out || !initialized) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, imu_state, application, 0); }
+    if (!out || !initialized) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, imu_state,0); }
     *out = {};
 
     // raw_bytes按陀螺仪Y轴、加速度计X/Y/Z轴的连续寄存器布局保存一帧数据。
@@ -330,7 +330,7 @@ esp_err_t ReadAttitude(AttitudeSample *out, ErrorInfo *error)
         gyro_weight *
             (last_pitch_deg + gyro_y_deg_s * interval_s) +
         (1.0f - gyro_weight) * accelerometer_pitch_deg;
-    if (!std::isfinite(next_pitch_deg) || !std::isfinite(gyro_y_deg_s)) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, imu_filter, application, 0, next_pitch_deg, 0, -1, 1); }
+    if (!std::isfinite(next_pitch_deg) || !std::isfinite(gyro_y_deg_s)) { return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, imu_filter,0, next_pitch_deg, 0, -1, ErrorValue); }
     last_pitch_deg = next_pitch_deg;
     previous_sample_us = now_us;
     *out = {last_pitch_deg, gyro_y_deg_s, true};

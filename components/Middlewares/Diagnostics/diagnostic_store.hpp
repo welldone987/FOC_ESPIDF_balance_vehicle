@@ -34,8 +34,7 @@ struct Event { std::uint32_t event_seq{}; ErrorInfo error{}; std::uint8_t flags{
 
 // CrashState是RAM诊断区的固定布局。
 struct CrashState {
-    // boot_step和event_seq记录启动阶段与事件序号。
-    BootStep boot_step{};
+    // event_seq记录事件序号。
     std::uint32_t event_seq{};
     // first_fault保留独立首故障槽。
     Event first_fault{};
@@ -43,8 +42,6 @@ struct CrashState {
     Event events[EventCapacity]{};
     // count和next记录环内事件数与下一个写入槽。
     std::uint8_t count{}, next{};
-    // boot_complete标记启动流程已完成。
-    bool boot_complete{};
     // last_control和fault_control保存最近与故障前控制快照。
     ControlSnapshot last_control{}, fault_control{};
     // last_timing、fault_timing及首轮/首次平衡计时用于时序诊断。
