@@ -19,7 +19,7 @@ namespace {
 /*
  * 静态资源保存ADC1的oneshot校准单元、连续DMA句柄、线性校准句柄和四路零偏。
  * Initialize()用oneshot完成零偏校准后切换到adc_continuous(DMA)，运行期由硬件写池。
- * Read()只做非阻塞排空，取最新一次四通道扫描，不做逐通道等待。
+ * 回调保存整帧和交付时间；Read()排空池后原子读取最新快照，不做逐通道等待。
  */
 // current_pins按M0 A/B、M1 A/B顺序排列四路相电流采样引脚。
 constexpr std::array<gpio_num_t, 4> current_pins{
@@ -46,14 +46,36 @@ std::array<adc_channel_t, 4> channels{};
 // offsets_mv保存零偏校准得到的每路静态电压，单位mV。
 std::array<float, 4> offsets_mv{};
 
-// carry保存不足一次扫描的尾巴，保证扫描边界永不失步。
-std::array<std::uint8_t, ScanBytes - 1U> carry{};
-unsigned carry_length = 0;
-// staging是每次排空读取的目标缓冲；latest_scan保存最新一次完整四通道扫描。
+// 回调复制整帧与交付时间，任务原子取走同一份现场；不借用驱动缓冲指针。
+struct DmaFrame {
+    std::array<std::uint8_t, DmaFrameBytes> bytes{};
+    std::int64_t delivered_us{};
+    std::uint32_t sequence{};
+    bool valid{};
+};
+portMUX_TYPE frame_mux = portMUX_INITIALIZER_UNLOCKED;
+DmaFrame delivered_frame{};
+DmaFrame selected_frame{}; // 仅ControlTask访问。
+std::uint32_t consumed_sequence = 0;
+
+bool IRAM_ATTR OnDmaFrame(adc_continuous_handle_t, const adc_continuous_evt_data_t *event, void *)
+{
+    const auto delivered_us = esp_timer_get_time();
+    portENTER_CRITICAL_ISR(&frame_mux);
+    delivered_frame.delivered_us = delivered_us;
+    ++delivered_frame.sequence;
+    delivered_frame.valid = event && event->conv_frame_buffer && event->size == DmaFrameBytes;
+    if (delivered_frame.valid) {
+        std::memcpy(delivered_frame.bytes.data(), event->conv_frame_buffer, DmaFrameBytes);
+    }
+    portEXIT_CRITICAL_ISR(&frame_mux);
+    return false; // GPTimer独占控制通知；回调不打印、不计算电流、不唤醒任务。
+}
+// staging用于清理驱动池；latest_scan来自selected_frame最后一次完整扫描。
 // 两个缓冲显式4字节对齐；结果按2字节步长解码。
 alignas(4) std::array<std::uint8_t, DmaReadBufferBytes> staging{};
 alignas(4) std::array<std::uint8_t, ScanBytes> latest_scan{};
-// sample_started_us记录本批采样的保守时刻，单位us。
+// sample_started_us记录交付时刻减标称扫描跨度的采样时间估计，单位us。
 std::int64_t sample_started_us = 0;
 
 // ReadOneshotMillivolts()按current_pins顺序读取四路电压，仅用于上电零偏校准。
@@ -74,48 +96,22 @@ esp_err_t ReadOneshotMillivolts(std::array<int, 4> &values_mv, ErrorInfo *error)
         ? ESP_OK : VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_timeout,0, esp_timer_get_time()-started_us, ReadMaxDuration_us, -1, ErrorValue | ErrorThreshold);
 }
 
-// EntryAt()按结果大小复制一次转换，避免把DMA传输字宽当成结果步长。
-adc_digi_output_data_t EntryAt(const std::uint8_t *scan, unsigned index)
+// 参照官方例程排空驱动池；实际控制样本取自带交付时间的回调快照。
+esp_err_t DrainDmaPool(ErrorInfo *error)
 {
-    adc_digi_output_data_t entry{};
-    static_assert(sizeof(entry) >= BytesPerConversion);
-    std::memcpy(&entry, scan + index * BytesPerConversion, BytesPerConversion);
-    return entry;
-}
-
-// DrainDmaScan()非阻塞排空DMA池并保留最新一次完整扫描；无完整扫描时返回false。
-bool DrainDmaScan(ErrorInfo *error)
-{
-    bool have_scan = false;
+    unsigned drained_bytes = 0;
     for (unsigned attempt = 0; attempt < DmaDrainReadLimit; ++attempt) {
-        unsigned prefix = 0;
-        if (carry_length != 0) {
-            std::memcpy(staging.data(), carry.data(), carry_length);
-            prefix = carry_length;
-        }
-        // room保持4字节对齐，满足驱动返回长度的对齐要求。
-        const std::uint32_t room = DmaReadBufferBytes - prefix;
         std::uint32_t got = 0;
-        const esp_err_t rc = adc_continuous_read(dma, staging.data() + prefix, room, &got, 0);
-        if (rc == ESP_ERR_TIMEOUT) { break; }
+        const esp_err_t rc = adc_continuous_read(dma, staging.data(), staging.size(), &got, 0);
+        if (rc == ESP_ERR_TIMEOUT) { return ESP_OK; }
         if (rc != ESP_OK) {
-            VEHICLE_ERROR(error, rc, current_dma_read, rc, 0, 0, -1, ErrorValue);
-            return false;
+            return VEHICLE_ERROR(error, rc, current_dma_read, rc, 0, 0, -1, ErrorValue);
         }
-        const unsigned total = prefix + got;
-        const unsigned scans = total / ScanBytes;
-        if (scans != 0) {
-            std::memcpy(latest_scan.data(), staging.data() + (scans - 1U) * ScanBytes, ScanBytes);
-            have_scan = true;
-        }
-        carry_length = total - scans * ScanBytes;
-        if (carry_length != 0) {
-            std::memmove(carry.data(), staging.data() + scans * ScanBytes, carry_length);
-        }
-        // 本次未读满说明池已排空；数据不足一次扫描时保留carry结束。
-        if (got < room || scans == 0) { break; }
+        drained_bytes += got;
+        // 短读也可能只到达环形缓冲的尾部，继续读取直到非阻塞超时确认池空。
     }
-    return have_scan;
+    return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_dma_read, 0,
+        drained_bytes, DmaStoreBytes, -1, ErrorValue | ErrorThreshold);
 }
 
 } // namespace
@@ -196,7 +192,7 @@ esp_err_t Initialize(ErrorInfo *error)
     dma_config.flags.flush_pool = true;
     result = adc_continuous_new_handle(&dma_config, &dma);
     if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_dma_init,result); }
-    // pattern顺序与current_pins一致，运行期按同一顺序解析。
+    // pattern顺序与current_pins一致；DMA存储顺序可能不同，运行期按通道标签归位。
     std::array<adc_digi_pattern_config_t, 4> pattern{};
     for (unsigned i = 0; i < channels.size(); ++i) {
         pattern[i].atten = ADC_ATTEN_DB_12;
@@ -211,7 +207,10 @@ esp_err_t Initialize(ErrorInfo *error)
     continuous.conv_mode = ADC_CONV_SINGLE_UNIT_1;
     result = adc_continuous_config(dma, &continuous);
     if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_dma_init,result); }
-    carry_length = 0;
+    adc_continuous_evt_cbs_t callbacks{};
+    callbacks.on_conv_done = OnDmaFrame;
+    result = adc_continuous_register_event_callbacks(dma, &callbacks, nullptr);
+    if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_dma_init,result); }
     ready=true;
     return ESP_OK;
 }
@@ -222,9 +221,12 @@ esp_err_t Start(ErrorInfo *error)
     if (started) { return ESP_OK; }
     esp_err_t result = adc_continuous_flush_pool(dma);
     if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_dma_start,result); }
+    // 此时DMA尚未启动，不存在并发回调。
+    delivered_frame = {};
+    selected_frame = {};
+    consumed_sequence = 0;
     result = adc_continuous_start(dma);
     if (result != ESP_OK) { return VEHICLE_ERROR(error, result, current_dma_start,result); }
-    carry_length = 0;
     started = true;
     return ESP_OK;
 }
@@ -245,19 +247,38 @@ esp_err_t Read(Sample *out, ErrorInfo *error)
     if (!ready) { return VEHICLE_ERROR(error,ESP_ERR_INVALID_STATE,current_state,0); }
     if (!started) { return VEHICLE_ERROR(error,ESP_ERR_INVALID_STATE,current_state,0); }
     const std::int64_t read_started_us = esp_timer_get_time();
-    if (!DrainDmaScan(error)) {
-        // 池里没有一次完整扫描：DMA停止或读取被长时间抢占，按传感器故障上报。
-        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_dma_read,0, 0, static_cast<float>(ScanBytes), -1, ErrorValue | ErrorThreshold);
+    const esp_err_t drain_result = DrainDmaPool(error);
+    if (drain_result != ESP_OK) { return drain_result; }
+    portENTER_CRITICAL(&frame_mux);
+    selected_frame = delivered_frame;
+    portEXIT_CRITICAL(&frame_mux);
+    if (!selected_frame.valid || selected_frame.sequence == consumed_sequence) {
+        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, current_dma_read, 0,
+            0, DmaFrameBytes, -1, ErrorValue | ErrorThreshold);
     }
-    // counts保存本次扫描的四路原始计数，通道顺序必须与pattern一致。
+    consumed_sequence = selected_frame.sequence;
+    std::memcpy(latest_scan.data(), selected_frame.bytes.data() + DmaFrameBytes - ScanBytes, ScanBytes);
+    std::array<adc_continuous_data_t, 4> parsed{};
+    std::uint32_t parsed_count = 0;
+    const esp_err_t parse_result = adc_continuous_parse_data(dma, latest_scan.data(), ScanBytes,
+        parsed.data(), &parsed_count);
+    if (parse_result != ESP_OK || parsed_count != parsed.size()) {
+        return VEHICLE_ERROR(error, parse_result != ESP_OK ? parse_result : ESP_ERR_INVALID_SIZE,
+            current_dma_read, parse_result);
+    }
+    // 四个结果按通道标签归位，拒绝未知/重复通道，保证每路恰好出现一次。
     std::array<int, 4> counts{};
+    std::array<bool, 4> seen{};
     for (unsigned i = 0; i < counts.size(); ++i) {
-        const auto entry = EntryAt(latest_scan.data(), i);
-        if (entry.type1.channel != channels[i]) {
+        const auto &entry = parsed[i];
+        unsigned slot = 0;
+        while (slot < channels.size() && entry.channel != channels[slot]) { ++slot; }
+        if (!entry.valid || entry.unit != ADC_UNIT_1 || slot == channels.size() || seen[slot]) {
             return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, current_dma_read,0,
-                entry.type1.channel, channels[i], i, ErrorValue | ErrorThreshold | ErrorChannel);
+                entry.channel, channels[i], i, ErrorValue | ErrorThreshold | ErrorChannel);
         }
-        counts[i] = static_cast<int>(entry.type1.data);
+        seen[slot] = true;
+        counts[slot] = static_cast<int>(entry.raw_data);
     }
     // phase_mv把原始计数换算为校准后的电压，单位mV。
     std::array<int, 4> phase_mv{};
@@ -286,9 +307,9 @@ esp_err_t Read(Sample *out, ErrorInfo *error)
         // 两相测量重构第三相，仅用于保护，不建立Id环。
         phase_currents[i] = {measured_a_A, measured_b_A, -measured_a_A - measured_b_A};
     }
-    // DMA没有逐样本时间戳：最新一帧的转换时刻落在[read-DmaScanPeriod_us, read]内，
-    // 取read-DmaScanPeriod_us作为保守上界；该常量在相邻采样做差时抵消，不影响dt。
-    sample_started_us = read_started_us - DmaScanPeriod_us;
+    // 与原始帧绑定的交付时间减最后扫描跨度；不再从读取时间固定回推整帧周期。
+    // ISR延迟仍未计入，该时间不是ADC硬件时间戳，实际采样年龄仍待实测。
+    sample_started_us = selected_frame.delivered_us - DmaScanPeriod_us;
     *out = {phase_currents, sample_started_us, true};
     return ESP_OK;
 }

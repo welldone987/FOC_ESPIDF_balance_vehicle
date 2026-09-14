@@ -26,7 +26,7 @@ inline constexpr std::int64_t ReadMaxDuration_us = 2000;
 // DmaSampleFreq_Hz是ADC连续转换的总频率，取ESP32驱动允许下限，与20kHz PWM载波同频。
 inline constexpr std::uint32_t DmaSampleFreq_Hz = 20000U;
 // DmaScansPerFrame是每次DMA转换帧包含的四通道扫描数。
-inline constexpr unsigned DmaScansPerFrame = 16U;
+inline constexpr unsigned DmaScansPerFrame = 4U;
 // DmaFrameBytes是转换帧字节数；一次四通道扫描8字节，帧长度保持4字节对齐。
 inline constexpr std::uint32_t DmaFrameBytes = 8U * DmaScansPerFrame;
 // DmaStoreBytes是驱动内部池容量，池满时按flush_pool丢弃最旧数据。
@@ -34,9 +34,11 @@ inline constexpr std::uint32_t DmaStoreBytes = 1024U;
 // DmaReadBufferBytes是单次排空读取的缓冲上限。
 inline constexpr unsigned DmaReadBufferBytes = 256U;
 // DmaDrainReadLimit限制单次Read()的排空次数，兜住异常情况下的读取耗时。
-inline constexpr unsigned DmaDrainReadLimit = 4U;
-// DmaScanPeriod_us是一次四通道扫描的标称周期，作为采样时刻的保守上界。
+inline constexpr unsigned DmaDrainReadLimit = 6U;
+// DmaScanPeriod_us是一次四通道扫描的标称周期。
 inline constexpr std::int64_t DmaScanPeriod_us = 4 * 1000000LL / DmaSampleFreq_Hz;
+// DmaFramePeriod_us计入完整帧交付间隔；不包含未实测的DMA中断延迟。
+inline constexpr std::int64_t DmaFramePeriod_us = DmaScanPeriod_us * DmaScansPerFrame;
 // Polarity把INA240输出方向转换为桥臂流向电机为正的相电流坐标。
 inline constexpr float Polarity = 1.0f;
 // AdcDefaultVref_mV是线性校准使用的缺省参考电压，单位mV。
