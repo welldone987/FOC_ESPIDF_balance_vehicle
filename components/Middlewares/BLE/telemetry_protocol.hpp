@@ -7,7 +7,7 @@
 
 namespace vehicle::ble {
 /*
- * .007遥测把最新TelemetrySnapshot编码为固定20字节小端报文。
+ * 遥测特征把最新TelemetrySnapshot编码为固定20字节小端报文。
  * EncodeTelemetry()检查有限性和样本年龄后填充俯仰角与两轮速度。
  */
 // 固定20字节、小端、IEEE-754。

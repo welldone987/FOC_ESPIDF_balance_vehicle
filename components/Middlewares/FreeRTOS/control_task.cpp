@@ -12,6 +12,7 @@
 #include "motor_config.hpp"
 #include "motor_foc_service.hpp"
 
+#include "driver/gptimer.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 #include <algorithm>
@@ -29,8 +30,8 @@ namespace {
 // control_storage和control_stack是ControlTask的静态TCB与栈。
 StaticTask_t control_storage{};
 StackType_t control_stack[ControlStackBytes]{};
-// control_timer是周期通知控制任务的ESP定时器句柄。
-esp_timer_handle_t control_timer{};
+// control_timer是周期通知控制任务的GPTimer句柄；中断在创建它的核上注册。
+gptimer_handle_t control_timer{};
 // 仅ControlTask访问。
 // 运行中不格式化日志，完成/故障时复制定长现场。
 control::ControlTiming cycle_timing{};
@@ -49,7 +50,13 @@ std::int64_t cycle_started_us{};
     diagnostics::Record(error,true);
     if (rc != ESP_OK) { diagnostics::Record(secondary); }
     motor::DisableOutputs();
-    if (control_timer) { esp_timer_stop(control_timer); }
+    if (control_timer) {
+        // 停表并释放GPTimer；ISR与驱动内部自旋锁串行化，可在任务上下文调用。
+        gptimer_stop(control_timer);
+        gptimer_disable(control_timer);
+        gptimer_del_timer(control_timer);
+        control_timer = nullptr;
+    }
     // 此时输出已禁能、定时器已停止。
     // 一次性串口报告不占用运行周期预算。
     diagnostics::sink::PrintControlFault(error);
@@ -74,10 +81,13 @@ void BootResult(diagnostics::BootStep step, esp_err_t rc, const ErrorInfo &error
     diagnostics::Boot(step,"OK",rc);
 }
 
-// ReleaseControl()由ESP定时器回调通知控制任务开始下一周期。
-void ReleaseControl(void *task_handle)
+// OnControlAlarm()由GPTimer周期中断直接通知控制任务开始下一周期。
+// ISR只发送通知，不执行控制计算；返回是否需要任务切换。
+bool OnControlAlarm(gptimer_handle_t, const gptimer_alarm_event_data_t *, void *context)
 {
-    xTaskNotifyGive(static_cast<TaskHandle_t>(task_handle));
+    BaseType_t woken = pdFALSE;
+    vTaskNotifyGiveFromISR(static_cast<TaskHandle_t>(context), &woken);
+    return woken == pdTRUE;
 }
 
 } // namespace
@@ -123,19 +133,31 @@ void ControlTask(void *argument)
         static_cast<long long>(encoder::OutputMaxAge_us),
         static_cast<long long>(motor::CurrentOutputMaxAge_us));
 
-    // 控制定时器使用ESP_TIMER_TASK回调，回调只发送通知，不执行控制计算。
-    esp_timer_create_args_t timer_config{};
-    timer_config.callback = ReleaseControl;
-    timer_config.arg = xTaskGetCurrentTaskHandle();
-    timer_config.dispatch_method = ESP_TIMER_TASK;
-    timer_config.name = "control_release";
+    // 控制定时器使用GPTimer周期中断：在ControlTask(=ControlCore)内注册，
+    // ISR随之注册在本核，通知不再经过esp_timer任务和跨核唤醒。
+    gptimer_config_t timer_config{};
+    timer_config.clk_src = GPTIMER_CLK_SRC_DEFAULT;
+    timer_config.direction = GPTIMER_COUNT_UP;
+    timer_config.resolution_hz = ControlTimerResolution_Hz;
 
     diagnostics::Boot(diagnostics::BootStep::timer,"BEGIN");
     auto &timer = control_timer;
-    result = esp_timer_create(&timer_config, &timer);
+    result = gptimer_new_timer(&timer_config, &timer);
     if (result == ESP_OK) {
-        result = esp_timer_start_periodic(timer, motor::ControlPeriod_us);
+        const gptimer_event_callbacks_t callbacks{ .on_alarm = OnControlAlarm };
+        result = gptimer_register_event_callbacks(timer, &callbacks, xTaskGetCurrentTaskHandle());
     }
+    if (result == ESP_OK) {
+        gptimer_alarm_config_t alarm{};
+        // 周期=|alarm_count-reload_count|：闹钟事件处硬件重装到0，与官方例程一致。
+        alarm.reload_count = 0;
+        alarm.alarm_count = motor::ControlPeriod_us;
+        // 硬件在闹钟事件处自动重装计数，周期不受ISR执行时刻影响。
+        alarm.flags.auto_reload_on_alarm = true;
+        result = gptimer_set_alarm_action(timer, &alarm);
+    }
+    if (result == ESP_OK) { result = gptimer_enable(timer); }
+    if (result == ESP_OK) { result = gptimer_start(timer); }
     if (result != ESP_OK) { VEHICLE_ERROR(&error,result,control_timer,result); }
     BootResult(diagnostics::BootStep::timer,result,error);
     diagnostics::Boot(diagnostics::BootStep::complete,"OK");
@@ -258,7 +280,7 @@ void ControlTask(void *argument)
         }
         ++sequence;
         cycle_timing.stage=control::ControlStage::publish;
-        // snapshot发布到遥测队列，供BLE .007和Wi-Fi消费。
+        // snapshot发布到遥测队列，供BLE遥测特征与Wi-Fi消费。
         const control::TelemetrySnapshot snapshot{
             cycle_time_us, sequence, attitude.pitch_deg,
             wheels.velocity_M0_rad_s, wheels.velocity_M1_rad_s,

@@ -76,8 +76,8 @@ The outer speed loop converts the commanded vehicle velocity into a pitch refere
   - Binary real-time telemetry
   - Structured diagnostic messages
 - **Wi-Fi telemetry**
-  - Optional TCP telemetry server
-  - Real-time attitude, wheel speed, current, voltage and sampling data
+  - Always-on TCP telemetry server (single client)
+  - Real-time attitude, M0/M1 wheel speed, current targets and measurements, phase currents and sampling validity
   - Default TCP port: `3333`
 - **Dual-core FreeRTOS**
   - Control task pinned to Core 1
@@ -143,7 +143,7 @@ FOC_ESPIDF_balance_vehicle/
 │       ├── Control/
 │       ├── Diagnostics/
 │       ├── FreeRTOS/
-│       └── WiFi/
+│       └── wifi_telemetry/
 │
 ├── main/
 │   └── app_main
@@ -195,7 +195,7 @@ ESP32
         └── SVPWM Update
 ```
 
-The main control task runs at **500 Hz**, while slower control loops are scheduled at their corresponding rates inside the control system.
+The main control task targets **500 Hz**, while slower control loops are scheduled at their corresponding rates inside the control system.
 
 ## Communication
 
@@ -209,13 +209,15 @@ The browser-based controller is available at:
 docs/平衡车控制界面.html
 ```
 
-Current protocol channels include:
+Current protocol characteristics:
 
 ```text
-.002    Control command
-.007    Binary telemetry
-diagnostic    Diagnostic / ErrorInfo
+Command characteristic      WRITE       X,Y text input
+Telemetry characteristic    NOTIFY      20-byte little-endian at 10 Hz
+Diagnostic characteristic   READ/WRITE  ErrorInfo text with 4-byte sequence ack
 ```
+
+Characteristic UUIDs use the Nordic-UART-style base `6e4000xx-b5a3-f393-e0a9-e50e24dcca9e` with `01` for the service and `02` / `07` / `08` for the three characteristics; the UUID byte sequences are the protocol contract.
 
 ### Wi-Fi TCP
 
@@ -224,11 +226,10 @@ Wi-Fi telemetry provides a higher-bandwidth debugging interface for control-syst
 The TCP server publishes data including:
 
 - pitch angle
-- angular velocity
-- left/right wheel speed
-- motor current
-- battery voltage
-- sampling status
+- M0/M1 wheel speed and velocity difference
+- current targets and measured currents
+- applied voltage and phase currents
+- sampling interval, sample age and validity
 
 Default port:
 
@@ -245,10 +246,9 @@ CONFIG_VEHICLE_WIFI_PASSWORD
 
 ## Build
 
-The project targets the classic ESP32 and uses **ESP-IDF v6.0.2**.
+The project targets the classic ESP32 and uses **ESP-IDF v6.0.2**. The target is already fixed to `esp32`; do not run `set-target`, as it clears the build state and regenerates configuration.
 
 ```powershell
-idf.py set-target esp32
 idf.py build
 ```
 

@@ -7,7 +7,7 @@ namespace control {
 
 /*
  * TelemetrySnapshot保存控制任务发布的一帧定长遥测数据。
- * BLE .007与Wi-Fi TCP消费同一类型，通过长度1静态队列传递最新值。
+ * BLE遥测特征与Wi-Fi TCP消费同一类型，通过长度1静态队列传递最新值。
  */
 struct TelemetrySnapshot {
     // device_time_us保存控制周期采样时刻，单位us。

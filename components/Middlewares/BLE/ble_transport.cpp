@@ -65,6 +65,15 @@ bool subscribed=false;
 
 int StartAdvertising(ErrorInfo *error);
 
+// TelemetryAccess()满足NimBLE"每个特征都必须注册访问回调"的强制要求，
+// 与ESP-IDF NimBLE示例中通知类特征的写法一致；遥测特征只开放NOTIFY，
+// 读写由特征属性在ATT层拒绝，桩回调不会收到实际请求。
+int TelemetryAccess(std::uint16_t, std::uint16_t, ble_gatt_access_ctxt *context, void *)
+{
+    if (context && context->op==BLE_GATT_ACCESS_OP_READ_CHR) { return BLE_ATT_ERR_READ_NOT_PERMITTED; }
+    return BLE_ATT_ERR_UNLIKELY;
+}
+
 // PublishConnection()向BleTask队列写入连接状态变化。
 void PublishConnection(bool connected)
 {
@@ -249,6 +258,7 @@ esp_err_t Create(const AccessHandlers &handlers, QueueHandle_t queue, ErrorInfo 
     characteristics[0].access_cb = access_handlers.command;
     characteristics[0].flags = BLE_GATT_CHR_F_WRITE;
     characteristics[1].uuid = &telemetry_uuid.u;
+    characteristics[1].access_cb = TelemetryAccess;
     characteristics[1].flags = BLE_GATT_CHR_F_NOTIFY;
     characteristics[1].val_handle = &telemetry_handle;
     characteristics[2].uuid = &diagnostic_uuid.u;

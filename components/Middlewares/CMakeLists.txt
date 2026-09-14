@@ -37,6 +37,7 @@ set(requires
     esp_event
     esp_netif
     esp_timer
+    esp_driver_gptimer
     esp_wifi
     freertos
     log

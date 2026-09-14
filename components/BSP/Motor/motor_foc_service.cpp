@@ -207,6 +207,9 @@ esp_err_t Initialize(ErrorInfo *error, BootReporter report)
     state_M0.previous_angle_rad = encoder_M0.angle_rad();
     state_M1.previous_angle_rad = encoder_M1.angle_rad();
     previous_encoder_us = 0;
+    // 对齐结束后才启动相电流DMA：对齐期间不采样，避免池在无人读取时溢出。
+    rc = current_sensor::Start(error);
+    if (rc != ESP_OK) { return rc; }
     initialized = true;
     return ESP_OK;
 }
@@ -358,7 +361,10 @@ esp_err_t PauseOutputs(ErrorInfo *error)
 esp_err_t DisableOutputs(ErrorInfo *error)
 {
     stopped=true;
-    return PauseOutputs(error);
+    const auto rc = PauseOutputs(error);
+    // 锁存停机后停止相电流DMA，避免无人读取时池溢出持续触发驱动中断。
+    const auto suspend_rc = current_sensor::Suspend(error);
+    return rc != ESP_OK ? rc : suspend_rc;
 }
 } // namespace motor
 } // namespace vehicle

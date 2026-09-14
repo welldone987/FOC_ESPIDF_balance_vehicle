@@ -16,11 +16,11 @@ inline constexpr char TelemetryUuid[] = "6e400007-b5a3-f393-e0a9-e50e24dcca9e";
 // StartupWait_ms是启动流程等待BleTask报告的上限。
 inline constexpr std::int64_t ReadyTimeout_us = 5000000;
 inline constexpr std::uint32_t StartupWait_ms = 6000U;
-// NotifyPeriod_ms是.007遥测通知周期。
+// NotifyPeriod_ms是遥测特征的通知周期。
 // NotifyErrorThrottle_us限制notify失败日志节流间隔。
 inline constexpr std::uint32_t NotifyPeriod_ms = 100U;
 inline constexpr std::int64_t NotifyErrorThrottle_us = 1000000;
-// TelemetryMaxAge_us是遥测快照可用于.007的新鲜度上限。
+// TelemetryMaxAge_us是遥测快照可用于遥测特征的新鲜度上限。
 inline constexpr std::int64_t TelemetryMaxAge_us = 500000;
 
 } // namespace ble

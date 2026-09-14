@@ -28,6 +28,7 @@ namespace vehicle {
     X(current_range, 0x206, "mV") X(current_timeout, 0x207, "us") \
     X(offset_mean, 0x208, "mV") X(offset_noise, 0x209, "mV") \
     X(phase_limit, 0x20a, "A") X(reconstructed_limit, 0x20b, "A") X(current_state, 0x20c, "") \
+    X(current_dma_init, 0x20d, "") X(current_dma_start, 0x20e, "") X(current_dma_read, 0x20f, "B") \
     /* 0x300 电机 */ \
     X(motor_gate, 0x300, "") X(enable_gpio, 0x301, "") X(disable_gpio, 0x302, "") \
     X(driver_M0, 0x303, "") X(driver_M1, 0x304, "") \
@@ -130,7 +131,7 @@ static_assert(::vehicle::PointValue(::vehicle::ErrorPoint::nvs) < 0x100);
 static_assert(::vehicle::PointValue(::vehicle::ErrorPoint::power_map) == 0x100);
 static_assert(::vehicle::PointValue(::vehicle::ErrorPoint::undervoltage) < 0x200);
 static_assert(::vehicle::PointValue(::vehicle::ErrorPoint::current_unit) == 0x200);
-static_assert(::vehicle::PointValue(::vehicle::ErrorPoint::current_state) < 0x300);
+static_assert(::vehicle::PointValue(::vehicle::ErrorPoint::current_dma_read) < 0x300);
 static_assert(::vehicle::PointValue(::vehicle::ErrorPoint::motor_gate) == 0x300);
 static_assert(::vehicle::PointValue(::vehicle::ErrorPoint::current_output_age) < 0x400);
 static_assert(::vehicle::PointValue(::vehicle::ErrorPoint::imu_bus) == 0x400);
