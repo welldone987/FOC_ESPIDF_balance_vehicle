@@ -98,7 +98,3 @@ idf.py -p COMx flash monitor
 ```
 
 Run `idf.py reconfigure` after adding or removing source files. Tuning lives with its module in `components/Middlewares/Control/control_config.hpp` and `components/BSP/Motor/motor_config.hpp`.
-
-## Status
-
-The firmware builds for `esp32` and exposes the full control path through BLE and TCP telemetry. Hardware behavior, timing margins and closed-loop stability are still being verified on the vehicle; a successful build is not hardware validation.
