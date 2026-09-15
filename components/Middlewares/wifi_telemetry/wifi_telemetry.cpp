@@ -83,7 +83,9 @@ void WifiEvent(void *, esp_event_base_t base, std::int32_t id, void *event_data)
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         xEventGroupSetBits(wifi_events, WifiReady);
         const auto *event = static_cast<const ip_event_got_ip_t *>(event_data);
-        ESP_LOGI(Tag, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        ESP_LOGI(Tag, "Got IP: " IPSTR "; TCP Client connect to " IPSTR ":%d",
+            IP2STR(&event->ip_info.ip), IP2STR(&event->ip_info.ip),
+            CONFIG_VEHICLE_WIFI_TELEMETRY_PORT);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         xEventGroupSetBits(wifi_events, ConnectRequested);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
@@ -191,6 +193,10 @@ esp_err_t Initialize()
     }
     if (result == ESP_OK) {
         result = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    }
+    if (result == ESP_OK) {
+        ESP_LOGI(Tag, "Wi-Fi initialized; waiting for Got IP (TCP port %d)",
+            CONFIG_VEHICLE_WIFI_TELEMETRY_PORT);
     }
     return result;
 }
@@ -337,4 +343,3 @@ void Service(const control::TelemetrySnapshot *snapshot)
 
 } // namespace wifi_telemetry
 } // namespace vehicle
-
