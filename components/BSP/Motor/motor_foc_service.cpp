@@ -229,8 +229,22 @@ esp_err_t ReadWheelState(WheelState *out, ErrorInfo *error)
         return VEHICLE_ERROR(error, ESP_ERR_INVALID_STATE, wheel_dt,0, dt_s,
             dt_s <= 0.0f ? 0.0f : MaximumControlGap_s, -1, ErrorValue | ErrorThreshold);
     }
+    const auto encoder_M0_started_us = esp_timer_get_time();
     if (!encoder_M0.Refresh()) { return VEHICLE_ERROR(error, encoder_M0.raw_error(), encoder_read_M0,encoder_M0.raw_error()); }
+    const auto encoder_M0_duration_us = esp_timer_get_time() - encoder_M0_started_us;
+    if (encoder_M0_duration_us > encoder::ReadMaxDuration_us) {
+        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, wheel_age,0,
+            encoder_M0_duration_us, encoder::ReadMaxDuration_us, 0,
+            ErrorValue | ErrorThreshold | ErrorChannel);
+    }
+    const auto encoder_M1_started_us = esp_timer_get_time();
     if (!encoder_M1.Refresh()) { return VEHICLE_ERROR(error, encoder_M1.raw_error(), encoder_read_M1,encoder_M1.raw_error()); }
+    const auto encoder_M1_duration_us = esp_timer_get_time() - encoder_M1_started_us;
+    if (encoder_M1_duration_us > encoder::ReadMaxDuration_us) {
+        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, wheel_age,0,
+            encoder_M1_duration_us, encoder::ReadMaxDuration_us, 1,
+            ErrorValue | ErrorThreshold | ErrorChannel);
+    }
     // 两台电机的轮速在状态副本上计算，成功后一起提交。
     auto next_state_M0 = state_M0;
     auto next_state_M1 = state_M1;
@@ -242,9 +256,6 @@ esp_err_t ReadWheelState(WheelState *out, ErrorInfo *error)
     const float velocity_M1_rad_s = UpdateWheel(encoder_M1, next_state_M1, ForwardSign_M1, dt_s);
     if (!std::isfinite(velocity_M0_rad_s) || !std::isfinite(velocity_M1_rad_s)) {
         return VEHICLE_ERROR(error, ESP_ERR_INVALID_RESPONSE, wheel_invalid,0);
-    }
-    if (esp_timer_get_time() - started_us > encoder::ReadMaxDuration_us) {
-        return VEHICLE_ERROR(error, ESP_ERR_TIMEOUT, wheel_age,0, esp_timer_get_time()-started_us, encoder::ReadMaxDuration_us, -1, ErrorValue | ErrorThreshold);
     }
     state_M0=next_state_M0; state_M1=next_state_M1;
     encoder_started_us=started_us; previous_encoder_us=started_us;

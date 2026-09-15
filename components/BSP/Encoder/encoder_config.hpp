@@ -12,7 +12,7 @@ inline constexpr std::uint8_t As5600Address = 0x36U;
 // As5600RawAngleRegister指向AS5600的12位原始角度寄存器。
 inline constexpr std::uint8_t As5600RawAngleRegister = 0x0cU;
 // ReadMaxDuration_us限制单次Refresh()读取AS5600的允许耗时，单位us。
-inline constexpr std::int64_t ReadMaxDuration_us = 2000;
+inline constexpr std::int64_t ReadMaxDuration_us = 3000;
 // OutputMaxAge_us限制编码器采样时刻到PWM提交的最大年龄，单位us。
 inline constexpr std::int64_t OutputMaxAge_us = 4000;
 // WheelVelocityFilter_s是轮速一阶低通滤波时间常数，单位s。

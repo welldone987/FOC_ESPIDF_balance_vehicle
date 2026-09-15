@@ -18,7 +18,7 @@ inline constexpr float MaximumControlGap_s = motor::MaximumControlGap_s;
 inline constexpr float RadToDeg = 57.295779513f;
 inline constexpr float DegToRad = 1.0f / RadToDeg;
 // FallAngle_rad是相对平衡零点的倾倒硬停机门，单位rad。
-inline constexpr float FallAngle_rad = 50.0f * DegToRad;
+inline constexpr float FallAngle_rad = 70.0f * DegToRad;
 // Gravity_m_s2是前馈换算使用的重力加速度，单位m/s²。
 inline constexpr float Gravity_m_s2 = 9.81f;
 // WheelRadius_m和WheelTrack_m是车轮半径与轮距，单位m。
@@ -35,7 +35,7 @@ inline constexpr float WheelAcceleration_rad_s2 = 20.0f;
 inline constexpr float YawRateLimit_rad_s = 2.0f;
 inline constexpr float YawAcceleration_rad_s2 = 4.0f;
 // PitchOffset_rad是平衡零点相对机械水平的偏移，单位rad。
-inline constexpr float PitchOffset_rad = 1.8f * DegToRad;
+inline constexpr float PitchOffset_rad = 0.0f * DegToRad;
 // PitchLimit_rad限制速度环输出的目标俯仰角，单位rad。
 inline constexpr float PitchLimit_rad = 4.8f * DegToRad;
 // AttitudeKp_A_per_rad和AttitudeKd_A_per_rad_s属于Control姿态PD，输出平衡电流请求。
