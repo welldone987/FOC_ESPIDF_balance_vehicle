@@ -98,7 +98,3 @@ idf.py -p COMx flash monitor
 ```
 
 新增或删除源文件后先执行 `idf.py reconfigure`。调参位于各模块内部：`components/Middlewares/Control/control_config.hpp` 与 `components/BSP/Motor/motor_config.hpp`。
-
-## 当前状态
-
-固件可通过 `esp32` 构建，控制链路已能通过 BLE 与 TCP 遥测观测。硬件行为、时序裕量与闭环稳定性仍在实车上验证；构建通过不等于硬件验证。
